@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "enforcement": "active",
+  "allow_project_override": false,
+  "rules": [
+    {
+      "id": "rm-rf-rootish",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)[a-zA-Z]*\\s+(--[^\\s]+\\s+)*(/\\*|/|~/?|\\$HOME/?)(\\s|$)",
+      "reason": "Recursive force delete aimed at a root-level or home path"
+    },
+    {
+      "id": "dd-to-device",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "dd\\s+[^\\n]*of=/dev/",
+      "reason": "dd writing directly to a block device"
+    },
+    {
+      "id": "mkfs",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "mkfs(\\.|-|\\s)",
+      "reason": "Filesystem format command"
+    },
+    {
+      "id": "terraform-destroy",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "terraform\\s+(apply\\s+-destroy|destroy)\\s",
+      "reason": "terraform destroy tears down managed infrastructure"
+    },
+    {
+      "id": "kubectl-delete-prod",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "kubectl\\s+delete\\s+[^\\n]*(--context[=\\s][^\\s]*(prod|live)|--all\\s)",
+      "reason": "kubectl delete against a production-looking context or --all"
+    },
+    {
+      "id": "git-push-force",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "git\\s+push\\s+[^\\n]*(--force|-f\\b)",
+      "reason": "Force push rewrites shared history"
+    },
+    {
+      "id": "git-reset-hard",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "git\\s+reset\\s+--hard",
+      "reason": "git reset --hard discards uncommitted work"
+    },
+    {
+      "id": "sudo",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(^|&&|;|\\|\\|)\\s*sudo\\s",
+      "reason": "Elevated-privilege command"
+    },
+    {
+      "id": "curl-pipe-shell",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(curl|wget)\\s+[^\\n]*\\|\\s*(sudo\\s+)?(ba|z|fi)?sh\\b",
+      "reason": "Piping a remote script straight into a shell"
+    },
+    {
+      "id": "read-env-secrets",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(cat|less|more|bat|tail|head)\\s+[^\\n]*\\.env(\\.|\\s|$)",
+      "reason": "Reading a .env secrets file into terminal output"
+    },
+    {
+      "id": "keychain-dump",
+      "severity": "alert",
+      "match": "substring",
+      "pattern": "security find-generic-password -w",
+      "reason": "Printing a macOS Keychain password"
+    },
+    {
+      "id": "npm-publish",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "npm\\s+publish\\b",
+      "reason": "Publishing a package is a public, hard-to-undo release"
+    },
+    {
+      "id": "aws-s3-destructive",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "aws\\s+s3\\s+(rm|sync\\s+[^\\n]*--delete)",
+      "reason": "Destructive S3 operation"
+    },
+    {
+      "id": "docker-prune-all",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "docker\\s+system\\s+prune\\s+[^\\n]*-a",
+      "reason": "docker system prune -a removes all unused images and volumes"
+    },
+    {
+      "id": "exfil-sensitive-dirs",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(scp|rsync|rclone\\s+(copy|move|sync))\\s+[^\\n]*(~/\\.ssh|~/\\.aws|~/\\.gnupg|fsw-bid-data)",
+      "reason": "Copying credential or bid-data directories off-machine"
+    },
+    {
+      "id": "evasion-stty-noecho",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "stty\\s+(-echo|raw)\\b",
+      "reason": "Disabling tty echo hides typed commands from pane watchers"
+    },
+    {
+      "id": "evasion-tmux-detached",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "tmux\\s+[^\\n]*(new-window|new-session|send-keys)[^\\n]*(-d|-b)\\b",
+      "reason": "Detached tmux execution is invisible to the pane watcher"
+    },
+    {
+      "id": "evasion-screen-detached",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "screen\\s+-[a-zA-Z]*d[a-zA-Z]*m",
+      "reason": "Detached screen execution is invisible to the pane watcher"
+    },
+    {
+      "id": "evasion-disown",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(disown|nohup\\s+[^\\n]*&\\s*$)",
+      "reason": "Detaching a process from the shell hides its lifetime"
+    },
+    {
+      "id": "evasion-base64-shell",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "base64\\s+(-d|--decode|-D)[^\\n]*\\|\\s*(ba|z)?sh\\b",
+      "reason": "Executing base64-decoded content — classic obfuscation"
+    },
+    {
+      "id": "evasion-eval-subshell",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "eval\\s+[\"']?\\$\\(",
+      "reason": "eval over command substitution obscures the real command"
+    },
+    {
+      "id": "evasion-sh-c-string",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(ba|z)?sh\\s+-c\\s+[\"']\\$\\(",
+      "reason": "Shell -c over a substituted string obscures the real command"
+    },
+    {
+      "id": "git-clean-force",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "git\\s+clean\\s+[^\\n]*-f",
+      "reason": "git clean -f deletes untracked files"
+    },
+    {
+      "id": "git-checkout-discard",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "git\\s+(checkout|restore)\\s+(--\\s|\\.)",
+      "reason": "Discarding working-tree changes"
+    },
+    {
+      "id": "git-branch-delete-force",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "git\\s+branch\\s+-D\\s",
+      "reason": "Force-deleting a branch"
+    },
+    {
+      "id": "rm-rf-generic",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)[a-zA-Z]*\\s",
+      "reason": "Any recursive force delete"
+    }
+  ]
+}
