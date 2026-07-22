@@ -22,6 +22,7 @@ export class HerdrSocket extends EventEmitter {
 		this.nextId = 1;
 		this.pending = new Map(); // id -> {resolve, reject, timer}
 		this.subscriptions = new Map(); // id -> onEvent
+		this.subscriptionCallbacks = new Set(); // Herdr 0.7.5 id-less events
 		this.closedByUs = false;
 		this.retryMs = minDelayMs;
 		this.retryTimer = null;
@@ -78,6 +79,7 @@ export class HerdrSocket extends EventEmitter {
 			this.conn = null;
 			this.#failAll(new Error("socket closed"));
 			this.subscriptions.clear();
+			this.subscriptionCallbacks.clear();
 			if (!this.closedByUs) {
 				if (wasConnected) this.emit("disconnected");
 				this.#scheduleReconnect();
@@ -95,8 +97,11 @@ export class HerdrSocket extends EventEmitter {
 		}
 		const id = msg?.id;
 		if (id !== undefined && this.subscriptions.has(id)) {
-			// Pushed event on an acked subscription
 			this.subscriptions.get(id)(msg);
+			return;
+		}
+		if (typeof msg?.event === "string" && msg.data !== undefined) {
+			for (const callback of this.subscriptionCallbacks) callback(msg);
 			return;
 		}
 		if (id !== undefined && this.pending.has(id)) {
@@ -110,6 +115,7 @@ export class HerdrSocket extends EventEmitter {
 			} else if (onEvent) {
 				// Subscribe ack: move to subscription routing
 				this.subscriptions.set(id, onEvent);
+				this.subscriptionCallbacks.add(onEvent);
 				resolve({ subscriptionId: id, ack: msg.result });
 			} else {
 				resolve(msg.result);
@@ -128,7 +134,9 @@ export class HerdrSocket extends EventEmitter {
 			const id = `g${this.nextId++}`;
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
+				const callback = this.subscriptions.get(id);
 				this.subscriptions.delete(id);
+				if (callback) this.subscriptionCallbacks.delete(callback);
 				reject(new Error(`timeout: ${method}`));
 			}, timeoutMs);
 			this.pending.set(id, { resolve, reject, timer, onEvent });
@@ -161,7 +169,7 @@ export class HerdrSocket extends EventEmitter {
 				await this.connect();
 				this.emit("reconnected");
 			} catch {
-				/* connect() failure triggers close -> rescheduled there */
+				this.#scheduleReconnect();
 			}
 		}, this.retryMs);
 		this.retryMs = Math.min(this.retryMs * 2, this.maxDelayMs);

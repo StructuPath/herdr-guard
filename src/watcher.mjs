@@ -52,6 +52,7 @@ function extractPaneId(payload) {
 }
 
 function extractPanes(snapshot) {
+	snapshot = snapshot?.snapshot ?? snapshot;
 	if (Array.isArray(snapshot?.panes)) return snapshot.panes;
 	if (Array.isArray(snapshot?.pane_records)) return snapshot.pane_records;
 	// Fallback: first array whose items look like pane records
@@ -63,6 +64,7 @@ function extractPanes(snapshot) {
 }
 
 function eventPayload(msg) {
+	if (typeof msg?.event === "string") return { ...(msg.data ?? {}), type: msg.event };
 	return msg?.event ?? msg?.result ?? msg;
 }
 
@@ -178,8 +180,7 @@ export class Guard {
 	isOwnPane(pane) {
 		if (!pane) return false;
 		if (this.ownPaneId && pane.pane_id === this.ownPaneId) return true;
-		const label = pane.label ?? pane.title ?? "";
-		return label === "Guard" || label === "herdr-guard";
+		return pane.plugin_id === "structupath.guard" || pane.plugin === "structupath.guard";
 	}
 
 	async watchPane(pane) {
@@ -196,7 +197,10 @@ export class Guard {
 			workspace: pane.workspace_id ?? null,
 			cwd: pane.cwd ?? pane.foreground_cwd ?? null,
 			baseline: new Set(),
+			queued: [],
+			reconciled: false,
 			sweepSeen: new Set(),
+			paneType: pane.pane_type ?? "output",
 			subscribedAt: 0,
 			lastSweep: 0,
 			sweeping: false,
@@ -235,6 +239,9 @@ export class Guard {
 		} catch {
 			/* pane may already be gone */
 		}
+		entry.reconciled = true;
+		const queued = entry.queued.splice(0);
+		for (const queuedMsg of queued) this.onPush(paneId, queuedMsg);
 		this.scheduleRender();
 	}
 
@@ -252,7 +259,13 @@ export class Guard {
 	onPush(paneId, msg) {
 		const entry = this.panes.get(paneId);
 		if (!entry || this.stopped) return;
+		if (!entry.reconciled) {
+			entry.queued.push(msg);
+			return;
+		}
 		const payload = eventPayload(msg);
+		const eventPaneId = extractPaneId(payload);
+		if (eventPaneId && eventPaneId !== paneId) return;
 		const text = extractText(payload);
 		if (!text) return;
 
@@ -405,35 +418,38 @@ export class Guard {
 			return;
 		}
 
+		// Interrupt first: never await enrichment or notification before ctrl+c.
+		let action = "logged";
+		if (severity === "interrupt" && entry.paneType === "shell") {
+			const sent = await this.sendKeys(paneId, ["ctrl+c"]);
+			action = sent ? "interrupted" : "interrupt-failed";
+		}
 		// Enrichment, best-effort.
 		let processArgv = null;
-		let paneType = "output";
+		let paneType = entry.paneType ?? "output";
 		try {
 			const info = await this.socket.request(
 				"pane.process_info",
 				{ pane_id: paneId },
 				{ timeoutMs: 3_000 },
 			);
-			const fg = info?.foreground?.[0] ?? info?.processes?.[0] ?? null;
-			processArgv = fg?.argv?.join(" ") ?? fg?.cmdline ?? fg?.name ?? null;
-			paneType = classifyPane(fg?.name ?? "", "");
+			const fg = info?.result?.process_info?.foreground_processes?.[0] ?? info?.process_info?.foreground_processes?.[0] ?? info?.foreground_processes?.[0] ?? info?.foreground?.[0] ?? info?.processes?.[0] ?? null;
+			processArgv = Array.isArray(fg?.process_argv) ? fg.process_argv.join(" ") : fg?.argv?.join(" ") ?? fg?.cmdline ?? fg?.name ?? null;
+			paneType = classifyPane(fg?.process_name ?? fg?.name ?? "", fg?.terminal_title ?? "");
+			if (fg?.cwd && fg.cwd !== entry.cwd) { this.overrideCache.delete(entry.cwd); entry.cwd = fg.cwd; }
 		} catch {
 			/* enrichment is optional */
 		}
 
-		let action = "logged";
 		if (severityRank(severity) >= severityRank("alert")) {
 			const notified = await this.notify(
 				`herdr-guard: ${severity}`,
 				`${rule.reason}\n${paneId}: ${line.slice(0, 120)}`,
 			);
-			if (notified) action = "notified";
+			if (notified && action === "logged") action = "notified";
 		}
-		if (severity === "interrupt") {
-			// Pinned invariant: keys go ONLY to the event's own pane_id.
-			const sent = await this.sendKeys(paneId, "ctrl+c");
-			action = sent ? "interrupted" : `${action};interrupt-failed`;
-		}
+		entry.paneType = paneType;
+		if (severity === "interrupt" && paneType !== "shell") action = "logged-non-shell";
 
 		this.audit.write({
 			ts: now,
@@ -572,7 +588,7 @@ export class Guard {
 		try {
 			await this.socket.request(
 				"pane.send_keys",
-				{ pane_id: paneId, keys },
+				{ pane_id: paneId, keys: Array.isArray(keys) ? keys : [keys] },
 				{ timeoutMs: 5_000 },
 			);
 			return true;

@@ -58,6 +58,9 @@ export function validateRule(rule, { allowRegex = true } = {}) {
 			errors.push(`pattern exceeds ${MAX_PATTERN_LENGTH} chars`);
 		}
 		if (rule.match === "regex") {
+			if (/(\(\?[=!<]|\(\?<[^=!]|\\k<|\\[1-9]|\(\?<[A-Za-z_])/.test(rule.pattern)) {
+				errors.push("regex uses constructs unsupported by Rust regex");
+			}
 			if (rule.pattern.startsWith("^")) {
 				errors.push("no ^ anchors — matched lines carry prompt glyphs");
 			}
@@ -126,12 +129,13 @@ export function compileRules(rawRules, { allowRegex = true } = {}) {
 }
 
 /** Build the single combined alternation regex used for one herdr-side
- * `pane.output_matched` subscription per pane. Returns null when no regex
- * rules exist (substring rules are matched locally by the sweep/scan path). */
+ * `pane.output_matched` subscription per pane. Includes escaped substring
+ * literals so push matching covers every rule.
+ */
 export function buildCombinedPattern(rules) {
-	const parts = rules
-		.filter((r) => r.match === "regex")
-		.map((r) => `(?:${r.pattern})`);
+	const parts = rules.map((r) =>
+		r.match === "regex" ? `(?:${r.pattern})` : escapeRegex(r.needle ?? r.pattern),
+	);
 	return parts.length > 0 ? parts.join("|") : null;
 }
 
@@ -139,16 +143,20 @@ export function buildCombinedPattern(rules) {
 // Matching
 // ---------------------------------------------------------------------------
 
-export function lineMatchesRule(line, rule) {
-	if (rule.prompt_only && !PROMPT_GLYPH_RE.test(line)) return false;
+function escapeRegex(value) {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function lineMatchesRule(line, rule, { paneType = null } = {}) {
+	if (rule.prompt_only && !PROMPT_GLYPH_RE.test(line) && !(rule.severity === "interrupt" && paneType && paneType !== "shell")) return false;
 	return rule.re ? rule.re.test(line) : line.includes(rule.needle);
 }
 
 /** Highest-severity matching rule for one line, or null. */
-export function matchLine(line, rules) {
+export function matchLine(line, rules, options = {}) {
 	let best = null;
 	for (const rule of rules) {
-		if (!lineMatchesRule(line, rule)) continue;
+		if (!lineMatchesRule(line, rule, options)) continue;
 		if (!best || severityRank(rule.severity) > severityRank(best.severity)) {
 			best = rule;
 		}
@@ -157,10 +165,10 @@ export function matchLine(line, rules) {
 }
 
 /** All highest-severity-per-line matches in a text blob. */
-export function scanText(text, rules) {
+export function scanText(text, rules, options = {}) {
 	const matches = [];
 	for (const line of String(text ?? "").split("\n")) {
-		const m = matchLine(line, rules);
+		const m = matchLine(line, rules, options);
 		if (m) matches.push(m);
 	}
 	return matches;
@@ -278,7 +286,7 @@ export class ConfigStore {
 	seedIfMissing() {
 		fs.mkdirSync(this.configDir, { recursive: true, mode: 0o700 });
 		fs.chmodSync(this.configDir, 0o700);
-		if (fs.existsSync(this.file)) return false;
+		if (fs.existsSync(this.file)) { fs.chmodSync(this.file, 0o600); return false; }
 		const defaults = JSON.parse(fs.readFileSync(this.defaultsPath, "utf8"));
 		writeJsonAtomic(this.file, defaults);
 		return true;
@@ -355,7 +363,10 @@ export class ConfigStore {
 
 	/** Flip enforcement, preserving every other field. Used by pause/resume. */
 	setEnforcement(enforcement, { pausedUntil = null } = {}) {
-		const base = this.lastGood?.raw ?? {};
+		if (!this.lastGood || !Array.isArray(this.lastGood.rules) || this.lastGood.rules.length === 0) {
+			return { config: null, error: "refusing enforcement change without a valid loaded config" };
+		}
+		const base = this.lastGood.raw ?? {};
 		const next = { ...base, enforcement };
 		if (enforcement === "paused") next.paused_until = pausedUntil;
 		else delete next.paused_until;
@@ -398,7 +409,7 @@ export function mergeProjectOverride(
 			continue;
 		}
 		try {
-			const compiled = compileRule(raw, { allowRegex: allowProjectOverride });
+			const compiled = compileRule(raw, { allowRegex: false });
 			merged.set(compiled.id, compiled);
 			applied.push({ kind: "add", rule: compiled.id });
 		} catch (err) {
@@ -419,7 +430,7 @@ export function mergeProjectOverride(
 			rejected.push({ kind: "raise", rule: id, reason: "unknown rule id" });
 			continue;
 		}
-		const cap = allowProjectOverride ? "interrupt" : "alert";
+		const cap = "alert";
 		if (
 			!SEVERITIES.includes(target) ||
 			severityRank(target) > severityRank(cap)
@@ -481,7 +492,7 @@ export class Dedupe {
 			pane = new Map();
 			this.panes.set(paneId, pane);
 		}
-		const key = `${line}${action}`;
+		const key = JSON.stringify([line, action]);
 		const ts = pane.get(key);
 		if (ts !== undefined && now - ts < this.windowMs) return true;
 		pane.set(key, now);
@@ -526,7 +537,7 @@ export class RateLimiter {
 	}
 
 	suppress(paneId, ruleId, now = Date.now()) {
-		const key = `${paneId}${ruleId}`;
+		const key = JSON.stringify([paneId, ruleId]);
 		const entry = this.suppressed.get(key) ?? {
 			paneId,
 			ruleId,
@@ -551,8 +562,8 @@ export class RateLimiter {
 
 	clearPane(paneId) {
 		this.hits.delete(paneId);
-		for (const key of this.suppressed.keys()) {
-			if (key.startsWith(`${paneId}`)) this.suppressed.delete(key);
+		for (const [key, entry] of this.suppressed) {
+			if (entry.paneId === paneId) this.suppressed.delete(key);
 		}
 	}
 }
