@@ -1,0 +1,56 @@
+id = "structupath.guard"
+name = "Guard"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Cross-agent command policy: audit, alert, and best-effort interrupt"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["npm", "test"]
+
+[[startup]]
+command = ["bash", "scripts/startup.sh"]
+
+[[actions]]
+id = "open"
+title = "Open guard"
+description = "Open the cross-agent guard pane"
+command = ["bash", "scripts/action.sh", "open"]
+
+[[actions]]
+id = "pause"
+title = "Pause enforcement"
+description = "Pause guard actions temporarily"
+command = ["bash", "scripts/action.sh", "pause"]
+
+[[actions]]
+id = "resume"
+title = "Resume enforcement"
+description = "Resume guard enforcement"
+command = ["bash", "scripts/action.sh", "resume"]
+
+[[actions]]
+id = "test"
+title = "Test a command"
+description = "Dry-run a command against the active policy"
+command = ["bash", "scripts/action.sh", "test"]
+
+[[actions]]
+id = "reset-rules"
+title = "Reset guard rules"
+description = "Back up and reseed the default rules"
+command = ["bash", "scripts/action.sh", "reset-rules"]
+
+[[panes]]
+id = "guard"
+title = "Guard"
+placement = "split"
+command = ["bash", "scripts/guard-pane.sh"]
+
+[[events]]
+on = "pane.closed"
+command = ["bash", "scripts/watchdog.sh"]
+
+[[events]]
+on = "pane.exited"
+command = ["bash", "scripts/watchdog.sh"]

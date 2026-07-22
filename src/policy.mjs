@@ -33,15 +33,20 @@ const BACKREF_RE = /\\[1-9]/;
  */
 export function validateRule(rule, { allowRegex = true } = {}) {
 	const errors = [];
-	if (!rule || typeof rule !== "object") return { errors: ["rule is not an object"] };
+	if (!rule || typeof rule !== "object")
+		return { errors: ["rule is not an object"] };
 	if (typeof rule.id !== "string" || !RULE_ID_RE.test(rule.id)) {
 		errors.push(`id must match ${RULE_ID_RE} (got ${JSON.stringify(rule.id)})`);
 	}
 	if (!SEVERITIES.includes(rule.severity)) {
-		errors.push(`severity must be one of ${SEVERITIES.join("/")} (got ${JSON.stringify(rule.severity)})`);
+		errors.push(
+			`severity must be one of ${SEVERITIES.join("/")} (got ${JSON.stringify(rule.severity)})`,
+		);
 	}
 	if (rule.match !== "regex" && rule.match !== "substring") {
-		errors.push(`match must be "regex" or "substring" (got ${JSON.stringify(rule.match)})`);
+		errors.push(
+			`match must be "regex" or "substring" (got ${JSON.stringify(rule.match)})`,
+		);
 	}
 	if (rule.match === "regex" && !allowRegex) {
 		errors.push("project overrides may only add substring rules");
@@ -82,7 +87,9 @@ export function validateRule(rule, { allowRegex = true } = {}) {
 export function compileRule(rule, { allowRegex = true } = {}) {
 	const { errors } = validateRule(rule, { allowRegex });
 	if (errors.length > 0) {
-		const err = new Error(`invalid rule ${JSON.stringify(rule?.id)}: ${errors.join("; ")}`);
+		const err = new Error(
+			`invalid rule ${JSON.stringify(rule?.id)}: ${errors.join("; ")}`,
+		);
 		err.validationErrors = errors;
 		throw err;
 	}
@@ -109,7 +116,10 @@ export function compileRules(rawRules, { allowRegex = true } = {}) {
 		try {
 			rules.push(compileRule(raw, { allowRegex }));
 		} catch (err) {
-			rejected.push({ rule: raw?.id ?? null, errors: err.validationErrors ?? [err.message] });
+			rejected.push({
+				rule: raw?.id ?? null,
+				errors: err.validationErrors ?? [err.message],
+			});
 		}
 	}
 	return { rules, rejected };
@@ -119,7 +129,9 @@ export function compileRules(rawRules, { allowRegex = true } = {}) {
  * `pane.output_matched` subscription per pane. Returns null when no regex
  * rules exist (substring rules are matched locally by the sweep/scan path). */
 export function buildCombinedPattern(rules) {
-	const parts = rules.filter((r) => r.match === "regex").map((r) => `(?:${r.pattern})`);
+	const parts = rules
+		.filter((r) => r.match === "regex")
+		.map((r) => `(?:${r.pattern})`);
 	return parts.length > 0 ? parts.join("|") : null;
 }
 
@@ -164,7 +176,11 @@ export function scanText(text, rules) {
 const ESC = "\\x1b";
 const ESCAPE_RE = new RegExp(
 	ESC +
-	"(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|" + ESC + "\\\\)|[PX^_].*?" + ESC + "\\\\|[@-Z\\\\-_]|\\([0-9A-B])",
+		"(?:\\[[0-?]*[ -/]*[@-~]|\\].*?(?:\\x07|" +
+		ESC +
+		"\\\\)|[PX^_].*?" +
+		ESC +
+		"\\\\|[@-Z\\\\-_]|\\([0-9A-B])",
 	"g",
 );
 // C0 (except none kept), DEL, and C1 — panes can emit terminal escapes and
@@ -179,9 +195,9 @@ export function sanitizeString(value) {
 }
 
 const REDACTIONS = [
-	// KEY=VALUE where the key names a secret
+	// KEY=VALUE where the key names a secret (including exact TOKEN/SECRET).
 	{
-		re: /\b([A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|AUTH|CREDENTIALS?|PRIVATE)[A-Z0-9_]*=)(\S+)/gi,
+		re: /\b((?:[A-Za-z_][A-Za-z0-9_]*?(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|AUTH|CREDENTIALS?|PRIVATE)[A-Z0-9_]*|TOKEN|SECRET|PASSWORD|API_?KEY)=)(\S+)/gi,
 		replace: "$1[REDACTED]",
 	},
 	// Authorization: bearer <token>
@@ -227,15 +243,19 @@ export function normalizeConfig(raw) {
 	}
 	const enforcement = raw.enforcement ?? "active";
 	if (enforcement !== "active" && enforcement !== "paused") {
-		errors.push(`enforcement must be active|paused (got ${JSON.stringify(raw.enforcement)})`);
+		errors.push(
+			`enforcement must be active|paused (got ${JSON.stringify(raw.enforcement)})`,
+		);
 	}
 	const { rules, rejected } = compileRules(raw.rules);
-	for (const r of rejected) errors.push(`rule ${r.rule}: ${r.errors.join("; ")}`);
+	for (const r of rejected)
+		errors.push(`rule ${r.rule}: ${r.errors.join("; ")}`);
 	if (rules.length === 0) errors.push("no valid rules");
 	const config = {
 		version: raw.version ?? 1,
 		enforcement,
-		paused_until: typeof raw.paused_until === "number" ? raw.paused_until : null,
+		paused_until:
+			typeof raw.paused_until === "number" ? raw.paused_until : null,
 		allow_project_override: raw.allow_project_override === true,
 		auto_reopen: raw.auto_reopen !== false,
 		rules,
@@ -273,23 +293,43 @@ export class ConfigStore {
 		try {
 			seeded = seedIfMissing ? this.seedIfMissing() : false;
 		} catch (err) {
-			return { config: this.lastGood, seeded: false, error: `seed failed: ${err.message}`, warnings: [] };
+			return {
+				config: this.lastGood,
+				seeded: false,
+				error: `seed failed: ${err.message}`,
+				warnings: [],
+			};
 		}
 		let rawText;
 		try {
 			rawText = fs.readFileSync(this.file, "utf8");
 		} catch (err) {
-			return { config: this.lastGood, seeded, error: `read failed: ${err.message}`, warnings: [] };
+			return {
+				config: this.lastGood,
+				seeded,
+				error: `read failed: ${err.message}`,
+				warnings: [],
+			};
 		}
 		let raw;
 		try {
 			raw = JSON.parse(rawText);
 		} catch (err) {
-			return { config: this.lastGood, seeded, error: `parse failed: ${err.message}`, warnings: [] };
+			return {
+				config: this.lastGood,
+				seeded,
+				error: `parse failed: ${err.message}`,
+				warnings: [],
+			};
 		}
 		const { config, errors } = normalizeConfig(raw);
 		if (!config) {
-			return { config: this.lastGood, seeded, error: errors.join("; "), warnings: [] };
+			return {
+				config: this.lastGood,
+				seeded,
+				error: errors.join("; "),
+				warnings: [],
+			};
 		}
 		this.lastGood = config;
 		try {
@@ -333,7 +373,11 @@ export class ConfigStore {
  * Returns merged COMPILED rules plus applied/rejected journals — every
  * applied override is audit-logged by the caller with its workspace path.
  */
-export function mergeProjectOverride(baseRules, override, { allowProjectOverride = false } = {}) {
+export function mergeProjectOverride(
+	baseRules,
+	override,
+	{ allowProjectOverride = false } = {},
+) {
 	const applied = [];
 	const rejected = [];
 	if (!override || typeof override !== "object") {
@@ -346,7 +390,11 @@ export function mergeProjectOverride(baseRules, override, { allowProjectOverride
 	// Added rules
 	for (const raw of Array.isArray(override.rules) ? override.rules : []) {
 		if (baseById.has(raw?.id) && !allowProjectOverride) {
-			rejected.push({ kind: "add", rule: raw?.id ?? null, reason: "id collides with a config-dir rule" });
+			rejected.push({
+				kind: "add",
+				rule: raw?.id ?? null,
+				reason: "id collides with a config-dir rule",
+			});
 			continue;
 		}
 		try {
@@ -354,12 +402,17 @@ export function mergeProjectOverride(baseRules, override, { allowProjectOverride
 			merged.set(compiled.id, compiled);
 			applied.push({ kind: "add", rule: compiled.id });
 		} catch (err) {
-			rejected.push({ kind: "add", rule: raw?.id ?? null, reason: (err.validationErrors ?? [err.message]).join("; ") });
+			rejected.push({
+				kind: "add",
+				rule: raw?.id ?? null,
+				reason: (err.validationErrors ?? [err.message]).join("; "),
+			});
 		}
 	}
 
 	// Severity raises — capped at alert. Raise-to-interrupt is self-DoS.
-	const raises = override.raise && typeof override.raise === "object" ? override.raise : {};
+	const raises =
+		override.raise && typeof override.raise === "object" ? override.raise : {};
 	for (const [id, target] of Object.entries(raises)) {
 		const base = merged.get(id);
 		if (!base) {
@@ -367,12 +420,26 @@ export function mergeProjectOverride(baseRules, override, { allowProjectOverride
 			continue;
 		}
 		const cap = allowProjectOverride ? "interrupt" : "alert";
-		if (!SEVERITIES.includes(target) || severityRank(target) > severityRank(cap)) {
-			rejected.push({ kind: "raise", rule: id, reason: `raise target capped at ${cap}` });
+		if (
+			!SEVERITIES.includes(target) ||
+			severityRank(target) > severityRank(cap)
+		) {
+			rejected.push({
+				kind: "raise",
+				rule: id,
+				reason: `raise target capped at ${cap}`,
+			});
 			continue;
 		}
-		if (severityRank(target) <= severityRank(base.severity) && !allowProjectOverride) {
-			rejected.push({ kind: "raise", rule: id, reason: "lowering severity is not allowed" });
+		if (
+			severityRank(target) <= severityRank(base.severity) &&
+			!allowProjectOverride
+		) {
+			rejected.push({
+				kind: "raise",
+				rule: id,
+				reason: "lowering severity is not allowed",
+			});
 			continue;
 		}
 		merged.set(id, { ...base, severity: target });
@@ -382,7 +449,11 @@ export function mergeProjectOverride(baseRules, override, { allowProjectOverride
 	// Disables — only when the config-dir file explicitly allows overrides.
 	for (const id of Array.isArray(override.disable) ? override.disable : []) {
 		if (!allowProjectOverride) {
-			rejected.push({ kind: "disable", rule: id, reason: "allow_project_override is false" });
+			rejected.push({
+				kind: "disable",
+				rule: id,
+				reason: "allow_project_override is false",
+			});
 			continue;
 		}
 		if (merged.delete(id)) applied.push({ kind: "disable", rule: id });
@@ -432,7 +503,10 @@ export class Dedupe {
 // ---------------------------------------------------------------------------
 
 export class RateLimiter {
-	constructor({ maxPerMinute = RATE_LIMIT_PER_MINUTE, windowMs = 60_000 } = {}) {
+	constructor({
+		maxPerMinute = RATE_LIMIT_PER_MINUTE,
+		windowMs = 60_000,
+	} = {}) {
 		this.maxPerMinute = maxPerMinute;
 		this.windowMs = windowMs;
 		this.hits = new Map(); // paneId -> number[]
@@ -453,7 +527,12 @@ export class RateLimiter {
 
 	suppress(paneId, ruleId, now = Date.now()) {
 		const key = `${paneId}${ruleId}`;
-		const entry = this.suppressed.get(key) ?? { paneId, ruleId, count: 0, firstTs: now };
+		const entry = this.suppressed.get(key) ?? {
+			paneId,
+			ruleId,
+			count: 0,
+			firstTs: now,
+		};
 		entry.count += 1;
 		this.suppressed.set(key, entry);
 	}
@@ -483,11 +562,16 @@ export class RateLimiter {
 // ---------------------------------------------------------------------------
 
 const SHELL_RE = /^(zsh|bash|sh|fish|dash|ksh|tcsh|nu|xonsh)(-?[0-9.]*)?$/i;
-const TUI_AGENT_RE = /^(pi|claude|codex|opencode|opencode-go|gemini|kimi|aider|amp|cursor-agent|crush|goose)/i;
+const TUI_AGENT_RE =
+	/^(pi|claude|codex|opencode|opencode-go|gemini|kimi|aider|amp|cursor-agent|crush|goose)/i;
 
 export function classifyPane(processName, terminalTitle = "") {
-	const name = String(processName ?? "").split("/").pop() ?? "";
+	const name =
+		String(processName ?? "")
+			.split("/")
+			.pop() ?? "";
 	if (SHELL_RE.test(name)) return "shell";
-	if (TUI_AGENT_RE.test(name) || TUI_AGENT_RE.test(String(terminalTitle))) return "tui-agent";
+	if (TUI_AGENT_RE.test(name) || TUI_AGENT_RE.test(String(terminalTitle)))
+		return "tui-agent";
 	return "output";
 }

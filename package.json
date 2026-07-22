@@ -1,12 +1,10 @@
 {
   "name": "herdr-guard",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "Cross-agent command policy layer for Herdr — watch every pane, audit, alert, interrupt",
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": {
-    "test": "node --test tests/"
-  },
+  "scripts": { "test": "node --test tests/*.test.mjs" },
   "license": "MIT"
 }
