@@ -27,21 +27,40 @@ const rule = (extra = {}) => ({
 	...extra,
 });
 
-test("default sudo rule matches decorated prompts", () => {
-	const sudo = compileRule(defaultRules.rules.find((r) => r.id === "sudo"));
+test("default interrupt and sudo rules match canonical end-of-line commands", () => {
+	const rules = defaultRules.rules.map((item) => compileRule(item));
 	for (const line of ["$ sudo rm", "❯ sudo rm", "% sudo rm", "╰─ sudo rm"]) {
-		assert.equal(scanText(line, [sudo]).length, 1, line);
+		assert.equal(scanText(line, rules).length, 1, line);
+	}
+	for (const line of [
+		"$ terraform destroy",
+		"$ kubectl delete pod --all",
+		"$ kubectl --context=prod delete pod",
+		"$ rm -r -f /",
+		"$ rm -f -r /",
+	]) {
+		assert.equal(scanText(line, rules).at(0)?.rule.severity, "interrupt", line);
 	}
 });
 
 test("audit tail includes rotated generations", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-"));
 	const log = new AuditLog(dir);
-	for (const [i, suffix] of enumerate(["", ".1", ".2", ".3"])) fs.writeFileSync(path.join(dir, `audit.jsonl${suffix}`), JSON.stringify({ ts: i + 1, note: `g${i}` }) + "\n");
-	assert.deepEqual(log.tail(4).map((x) => x.note), ["g0", "g1", "g2", "g3"]);
+	for (const [i, suffix] of enumerate(["", ".1", ".2", ".3"]))
+		fs.writeFileSync(
+			path.join(dir, `audit.jsonl${suffix}`),
+			JSON.stringify({ ts: i + 1, note: `g${i}` }) + "\n",
+		);
+	assert.deepEqual(
+		log.tail(4).map((x) => x.note),
+		["g0", "g1", "g2", "g3"],
+	);
 });
 
-function* enumerate(values) { let i = 0; for (const value of values) yield [i++, value]; }
+function* enumerate(values) {
+	let i = 0;
+	for (const value of values) yield [i++, value];
+}
 
 test("prompt-only matching and combined patterns", () => {
 	const compiled = [compileRule(rule())];
@@ -55,23 +74,36 @@ test("prompt-only matching and combined patterns", () => {
 	);
 });
 
-test("project overrides add rules and cap severity", () => {
+test("project overrides stay substring-only and cap severity", () => {
 	const base = [compileRule(rule({ severity: "alert" }))];
-	const result = mergeProjectOverride(base, {
-		rules: [
-			{
-				id: "local",
-				severity: "interrupt",
-				match: "substring",
-				pattern: "wipe",
-				reason: "local",
-			},
-		],
-		raise: { danger: "interrupt" },
-	});
-	assert.equal(result.rules.length, 2);
+	const result = mergeProjectOverride(
+		base,
+		{
+			rules: [
+				{
+					id: "local",
+					severity: "interrupt",
+					match: "substring",
+					pattern: "wipe",
+					reason: "local",
+				},
+				{
+					id: "regex-local",
+					severity: "alert",
+					match: "regex",
+					pattern: "wipe.*all",
+					reason: "regex",
+				},
+			],
+			raise: { danger: "interrupt" },
+		},
+		{ allowProjectOverride: true },
+	);
 	assert.equal(result.rules.find((r) => r.id === "danger").severity, "alert");
-	assert.equal(result.rejected.length, 1);
+	assert.equal(result.rules.find((r) => r.id === "local").severity, "alert");
+	assert.equal(result.rules.some((r) => r.id === "regex-local"), false);
+	assert.ok(result.rejected.some((entry) => entry.rule === "regex-local"));
+	assert.ok(result.rejected.some((entry) => entry.rule === "danger"));
 });
 
 test("dedupe never suppresses interrupts and rate limits", () => {
@@ -97,34 +129,46 @@ test("sanitizes controls and redacts secrets", () => {
 	assert.match(redactSecrets("TOKEN=secret sk-abcdefghijk"), /\[REDACTED\]/);
 });
 
-test("ConfigStore keeps last good config after invalid JSON", () => {
+test("ConfigStore keeps last good config after invalid JSON or enforcement", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-config-"));
 	const defaults = path.join(dir, "defaults.json");
 	fs.writeFileSync(defaults, JSON.stringify({ version: 1, rules: [rule()] }));
 	const store = new ConfigStore({ configDir: dir, defaultsPath: defaults });
-	assert.ok(store.load().config);
+	const first = store.load().config;
+	assert.ok(first);
 	fs.writeFileSync(path.join(dir, "rules.json"), "{");
-	assert.ok(store.load({ seedIfMissing: false }).config);
+	assert.equal(store.load({ seedIfMissing: false }).config, first);
+	fs.writeFileSync(
+		path.join(dir, "rules.json"),
+		JSON.stringify({ enforcement: "disabled", rules: [rule()] }),
+	);
+	const invalid = store.load({ seedIfMissing: false });
+	assert.equal(invalid.config, first);
+	assert.match(invalid.error, /enforcement must be active\|paused/);
 });
 
-test("audit log partitions interrupt entries and redacts fields", () => {
+test("audit log enforces modes, partitions, rotates, and removes secrets/control bytes", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-audit-"));
-	const log = new AuditLog(dir);
+	const log = new AuditLog(dir, { maxBytes: 80, generations: 3 });
 	log.write({
 		ts: 1,
 		severity: "interrupt",
-		matched_text: "$ TOKEN=secret",
+		matched_text: `$ TOKEN=secret sk-abcdefghijk\x1b]8;;https://evil\x07${"x".repeat(300)}\x1b\\`,
 		pane_id: "p",
 	});
-	log.write({
-		ts: 2,
-		severity: "alert",
-		matched_text: "npm publish",
-		pane_id: "p",
-	});
-	assert.match(
-		fs.readFileSync(path.join(dir, "audit.interrupt.jsonl"), "utf8"),
-		/REDACTED/,
-	);
-	assert.equal(log.tail(2).length, 2);
+	for (let ts = 2; ts <= 8; ts++) {
+		log.write({ ts, severity: "alert", matched_text: `npm publish ${ts}`, pane_id: "p" });
+	}
+	assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+	for (const file of ["audit.jsonl", "audit.interrupt.jsonl"]) {
+		assert.equal(fs.statSync(path.join(dir, file)).mode & 0o777, 0o600);
+	}
+	const interrupt = fs.readFileSync(path.join(dir, "audit.interrupt.jsonl"), "utf8");
+	assert.match(interrupt, /REDACTED/);
+	assert.doesNotMatch(interrupt, /secret|sk-abcdefghijk|https:\/\/evil|\x1b/);
+	const parsed = JSON.parse(interrupt.trim());
+	assert.ok(parsed.matched_text.length <= 200);
+	assert.ok(fs.existsSync(path.join(dir, "audit.jsonl.1")));
+	assert.ok(log.tail(20).some((entry) => entry.severity === "interrupt"));
+	assert.ok(log.tail(20).some((entry) => entry.severity === "alert"));
 });

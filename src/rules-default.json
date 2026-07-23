@@ -7,8 +7,8 @@
       "id": "rm-rf-rootish",
       "severity": "interrupt",
       "match": "regex",
-      "pattern": "rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)[a-zA-Z]*\\s+(--[^\\s]+\\s+)*(/\\*|/|~/?|\\$HOME/?)(\\s|$)",
-      "reason": "Recursive force delete aimed at a root-level or home path"
+      "pattern": "rm\\s+(-[^\\s]+\\s+)*(-[a-zA-Z]*r[a-zA-Z]*|--recursive)\\s+(-[^\\s]+\\s+)*(/\\*|/|~/?|\\$HOME/?)(\\s|$)",
+      "reason": "Recursive delete aimed at a root-level or home path"
     },
     {
       "id": "dd-to-device",
@@ -28,14 +28,14 @@
       "id": "terraform-destroy",
       "severity": "interrupt",
       "match": "regex",
-      "pattern": "terraform\\s+(apply\\s+-destroy|destroy)\\s",
+      "pattern": "terraform\\s+(apply\\s+-destroy|destroy)(\\s|$)",
       "reason": "terraform destroy tears down managed infrastructure"
     },
     {
       "id": "kubectl-delete-prod",
       "severity": "interrupt",
       "match": "regex",
-      "pattern": "kubectl\\s+delete\\s+[^\\n]*(--context[=\\s][^\\s]*(prod|live)|--all\\s)",
+      "pattern": "kubectl\\s+([^\\n]*--context[=\\s][^\\s]*(prod|live)[^\\n]*\\s+delete\\s+|[^\\n]*delete\\s+[^\\n]*(--context[=\\s][^\\s]*(prod|live)|--all(\\s|$)))",
       "reason": "kubectl delete against a production-looking context or --all"
     },
     {

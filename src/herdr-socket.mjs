@@ -175,6 +175,33 @@ export class HerdrSocket extends EventEmitter {
 		this.retryMs = Math.min(this.retryMs * 2, this.maxDelayMs);
 	}
 
+	/** Drop all server-side subscriptions and establish a fresh connection. */
+	async resetConnection() {
+		this.closedByUs = true;
+		if (this.retryTimer) clearTimeout(this.retryTimer);
+		this.retryTimer = null;
+		const previous = this.conn;
+		if (previous && !previous.destroyed) {
+			await new Promise((resolve) => {
+				previous.once("close", resolve);
+				previous.destroy();
+			});
+		}
+		this.conn = null;
+		this.connected = false;
+		this.buffer = "";
+		this.#failAll(new Error("connection reset"));
+		this.subscriptions.clear();
+		this.subscriptionCallbacks.clear();
+		this.closedByUs = false;
+		try {
+			await this.connect();
+		} catch (error) {
+			this.#scheduleReconnect();
+			throw error;
+		}
+	}
+
 	close() {
 		this.closedByUs = true;
 		if (this.retryTimer) clearTimeout(this.retryTimer);

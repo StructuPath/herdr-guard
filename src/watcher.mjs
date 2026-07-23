@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { HerdrSocket } from "./herdr-socket.mjs";
 import { AuditLog } from "./audit.mjs";
 import {
@@ -80,6 +81,7 @@ export class Guard {
 		ownPaneId = null,
 		now = () => Date.now(),
 		onRender = null,
+		onDisconnect = null,
 		overrideDir = (cwd) => path.join(cwd, ".herdr-guard.json"),
 	}) {
 		this.socket = socket;
@@ -88,6 +90,7 @@ export class Guard {
 		this.ownPaneId = ownPaneId;
 		this.now = now;
 		this.onRender = onRender;
+		this.onDisconnect = onDisconnect;
 		this.overrideDir = overrideDir;
 
 		this.config = null;
@@ -95,11 +98,13 @@ export class Guard {
 		this.dedupe = new Dedupe();
 		this.rateLimiter = new RateLimiter();
 		this.overrideCache = new Map(); // cwd -> {mtimeMs, rules, appliedLogged}
+		this.notificationTimes = new Map(); // rule id -> last notification timestamp
 		this.matchesToday = 0;
 		this.today = new Date(now()).toDateString();
 		this.connected = false;
 		this.timers = [];
 		this.renderTimer = null;
+		this.bootstrapRetryTimer = null;
 		this.stopped = false;
 	}
 
@@ -125,17 +130,21 @@ export class Guard {
 
 		this.socket.on("disconnected", () => {
 			this.connected = false;
+			this.logSystem("disconnected", "Herdr socket disconnected; enforcement is down");
+			this.onDisconnect?.();
 			this.scheduleRender();
 		});
 		this.socket.on("reconnected", () => {
-			this.connected = true;
-			this.bootstrap().catch(() => {});
+			this.connected = false;
+			this.bootstrap().catch((error) => this.scheduleBootstrapRetry(error));
 		});
 
 		await this.bootstrap();
 
 		this.timers.push(setInterval(() => this.sweepTick(), SWEEP_TICK_MS));
-		this.timers.push(setInterval(() => this.configTick(), CONFIG_POLL_MS));
+		this.timers.push(
+			setInterval(() => this.configTick().catch(() => {}), CONFIG_POLL_MS),
+		);
 		this.timers.push(
 			setInterval(() => this.flushCoalesced(), COALESCE_FLUSH_MS),
 		);
@@ -150,8 +159,8 @@ export class Guard {
 		this.dedupe = new Dedupe();
 		this.rateLimiter = new RateLimiter();
 
+		this.connected = false;
 		const snapshot = await this.socket.request("session.snapshot", {});
-		this.connected = true;
 
 		// Global lifecycle: new panes, closing panes (post-mortem), exits.
 		await this.socket.subscribe(
@@ -166,14 +175,35 @@ export class Guard {
 		const panes = extractPanes(snapshot);
 		// Subscribe-first/reconcile is async per pane; never serialize the whole
 		// bootstrap on one slow pane.
-		await Promise.allSettled(panes.map((pane) => this.watchPane(pane)));
+		const watched = await Promise.allSettled(
+			panes.map((pane) => this.watchPane(pane)),
+		);
+		const failed = watched.find((result) => result.status === "rejected");
+		if (failed) throw failed.reason;
+		this.connected = true;
 		this.scheduleRender();
+	}
+
+	scheduleBootstrapRetry(error) {
+		this.connected = false;
+		this.logSystem("bootstrap-error", error.message);
+		this.scheduleRender();
+		if (this.stopped || this.bootstrapRetryTimer) return;
+		this.bootstrapRetryTimer = setTimeout(() => {
+			this.bootstrapRetryTimer = null;
+			if (!this.socket.connected) return;
+			this.bootstrap().catch((nextError) =>
+				this.scheduleBootstrapRetry(nextError),
+			);
+		}, 1_000);
+		this.bootstrapRetryTimer.unref?.();
 	}
 
 	stop() {
 		this.stopped = true;
 		for (const t of this.timers) clearInterval(t);
 		if (this.renderTimer) clearTimeout(this.renderTimer);
+		if (this.bootstrapRetryTimer) clearTimeout(this.bootstrapRetryTimer);
 		this.socket.close?.();
 	}
 
@@ -209,6 +239,8 @@ export class Guard {
 			subscribedAt: 0,
 			lastSweep: 0,
 			sweeping: false,
+			projectPattern: null,
+			onEvent: (msg) => this.onPush(paneId, msg),
 		};
 		this.panes.set(paneId, entry);
 
@@ -228,7 +260,7 @@ export class Guard {
 							match: { type: "regex", value: combined },
 						},
 					],
-					(msg) => this.onPush(paneId, msg),
+					entry.onEvent,
 				);
 				entry.subscribedAt = this.now();
 			} catch (err) {
@@ -237,8 +269,10 @@ export class Guard {
 		}
 
 		// Resolve process metadata before releasing queued replay events, so the first
-		// real shell interrupt is classified correctly.
+		// real shell interrupt is classified correctly. Then subscribe any
+		// project-added patterns before taking the shared baseline.
 		await this.refreshPaneInfo(entry);
+		await this.ensureProjectSubscription(entry);
 
 		// 2) THEN reconcile: baseline read. Content-based replay suppression
 		//    compares push events against this set.
@@ -250,19 +284,61 @@ export class Guard {
 		}
 		entry.reconciled = true;
 		const queued = entry.queued.splice(0);
-		for (const queuedMsg of queued) this.onPush(paneId, queuedMsg);
+		for (const queuedMsg of queued) this.onPush(paneId, queuedMsg, { replay: true });
 		this.scheduleRender();
+	}
+
+	async ensureProjectSubscription(entry) {
+		const basePatterns = new Set(
+			this.config.rules.map((rule) => `${rule.match}:${rule.pattern}`),
+		);
+		const projectRules = this.rulesFor(entry).filter(
+			(rule) => !basePatterns.has(`${rule.match}:${rule.pattern}`),
+		);
+		const pattern = buildCombinedPattern(projectRules);
+		if (!pattern || pattern === entry.projectPattern) return;
+		await this.socket.subscribe(
+			[
+				{
+					type: "pane.output_matched",
+					pane_id: entry.id,
+					source: "recent_unwrapped",
+					lines: 5,
+					strip_ansi: true,
+					match: { type: "regex", value: pattern },
+				},
+			],
+			entry.onEvent,
+		);
+		entry.projectPattern = pattern;
 	}
 
 	async refreshPaneInfo(entry) {
 		try {
-			const info = await this.socket.request("pane.process_info", { pane_id: entry.id }, { timeoutMs: 3_000 });
-			const fg = info?.result?.process_info?.foreground_processes?.[0] ?? info?.process_info?.foreground_processes?.[0] ?? null;
+			const info = await this.socket.request(
+				"pane.process_info",
+				{ pane_id: entry.id },
+				{ timeoutMs: 3_000 },
+			);
+			const fg =
+				info?.result?.process_info?.foreground_processes?.[0] ??
+				info?.process_info?.foreground_processes?.[0] ??
+				null;
 			if (!fg) return;
-			entry.paneType = classifyPane(fg.process_name ?? fg.name ?? fg.argv0 ?? "", fg.terminal_title ?? "");
+			entry.paneType = classifyPane(
+				fg.process_name ?? fg.name ?? fg.argv0 ?? "",
+				fg.terminal_title ?? "",
+			);
 			const cwd = fg.cwd ?? null;
-			if (cwd && cwd !== entry.cwd) { this.overrideCache.delete(entry.cwd); entry.cwd = cwd; }
-		} catch { /* metadata is best effort */ }
+			if (cwd && cwd !== entry.cwd) {
+				this.overrideCache.delete(entry.cwd);
+				entry.cwd = cwd;
+				entry.projectPattern = null;
+				if (entry.reconciled) await this.ensureProjectSubscription(entry);
+			}
+		} catch {
+			/* metadata is best effort */
+		}
 	}
 
 	async readPane(paneId, lines = 120) {
@@ -276,7 +352,7 @@ export class Guard {
 
 	// --- event handling -------------------------------------------------------
 
-	onPush(paneId, msg) {
+	onPush(paneId, msg, { replay = false } = {}) {
 		const entry = this.panes.get(paneId);
 		if (!entry || this.stopped) return;
 		if (!entry.reconciled) {
@@ -289,20 +365,26 @@ export class Guard {
 		const text = extractText(payload);
 		if (!text) return;
 
-		const matches = scanText(text, this.rulesFor(entry));
+		const matches = scanText(text, this.rulesFor(entry), {
+			paneType: entry.paneType,
+		});
 		if (matches.length === 0) return;
 
-		// Content-based replay suppression: events arriving within the replay
-		// window whose matched lines were already in the baseline are stale
-		// scrollback, not new offenses. Never act on them — an interrupt replay
-		// would ctrl+c whatever the pane is doing NOW.
+		// Replayed scrollback is suppressed by content when it was queued during
+		// reconciliation. The short timing window is only a fallback for an event
+		// delivered just after reconciliation. Consume each baseline line once so
+		// a later, genuinely repeated command is never permanently hidden.
 		const withinReplay = this.now() - entry.subscribedAt < REPLAY_WINDOW_MS;
-		if (withinReplay) {
-			const allStale = matches.every((m) => entry.baseline.has(m.line));
-			if (allStale) return;
+		const actionable = [];
+		for (const match of matches) {
+			if ((replay || withinReplay) && entry.baseline.has(match.line)) {
+				entry.baseline.delete(match.line);
+				continue;
+			}
+			actionable.push(match);
 		}
 
-		for (const match of matches) {
+		for (const match of actionable) {
 			this.handleMatch(entry, match, "push").catch(() => {});
 		}
 	}
@@ -432,8 +514,10 @@ export class Guard {
 		if (this.dedupe.seen(paneId, line, `match:${rule.id}`, severity, now))
 			return;
 
-		// Rate limit with coalescing.
-		if (!this.rateLimiter.allow(paneId, now)) {
+		// Alerts/audits are rate-limited and coalesced. Interrupt rules must never
+		// be suppressed by lower-severity flood traffic: doing so would let the
+		// next destructive command execute without ctrl+c or an audit record.
+		if (severity !== "interrupt" && !this.rateLimiter.allow(paneId, now)) {
 			this.rateLimiter.suppress(paneId, rule.id, now);
 			return;
 		}
@@ -476,11 +560,20 @@ export class Guard {
 		}
 
 		if (severityRank(severity) >= severityRank("alert")) {
-			const notified = await this.notify(
-				`herdr-guard: ${severity}`,
-				`${rule.reason}\n${paneId}: ${line.slice(0, 120)}`,
-			);
-			if (notified && action === "logged") action = "notified";
+			const lastNotification = this.notificationTimes.get(rule.id);
+			if (
+				lastNotification === undefined ||
+				now - lastNotification >= COALESCE_FLUSH_MS
+			) {
+				this.notificationTimes.set(rule.id, now);
+				const notified = await this.notify(
+					`herdr-guard: ${severity}`,
+					`${rule.reason}\n${paneId}: ${line.slice(0, 120)}`,
+				);
+				if (notified && action === "logged") action = "notified";
+			} else if (action === "logged") {
+				action = "notification-coalesced";
+			}
 		}
 		entry.paneType = paneType;
 		if (severity === "interrupt" && paneType !== "shell")
@@ -525,7 +618,10 @@ export class Guard {
 
 	async sweepPane(entry) {
 		const text = await this.readPane(entry.id);
-		const matches = scanText(text, this.rulesFor(entry));
+		await this.refreshPaneInfo(entry);
+		const matches = scanText(text, this.rulesFor(entry), {
+			paneType: entry.paneType,
+		});
 		for (const match of matches) {
 			// Sweep re-reads the same screen every interval — only act on lines
 			// not seen by a previous sweep, or a static dangerous line would
@@ -541,7 +637,7 @@ export class Guard {
 
 	// --- config / enforcement ---------------------------------------------------
 
-	configTick() {
+	async configTick() {
 		if (this.stopped) return;
 		// Pause TTL auto-resume — a forgotten or abused pause self-heals.
 		if (
@@ -566,7 +662,14 @@ export class Guard {
 		this.config = result.config;
 		this.overrideCache.clear();
 		this.connected = false;
-		this.bootstrap().catch(() => {});
+		this.scheduleRender();
+		try {
+			await this.socket.resetConnection();
+			await this.bootstrap();
+		} catch (error) {
+			if (this.socket.connected) this.scheduleBootstrapRetry(error);
+			return;
+		}
 		this.audit.write({
 			ts: this.now(),
 			action_taken: "config-change",
@@ -609,10 +712,10 @@ export class Guard {
 	// --- actions (best-effort wrappers) -----------------------------------------
 
 	async notify(title, body) {
-			const safeTitle = cleanField(String(title)).slice(0, 200);
-			const safeBody = cleanField(String(body)).slice(0, 200);
-			try {
-				await this.socket.request(
+		const safeTitle = cleanField(String(title)).slice(0, 200);
+		const safeBody = cleanField(String(body)).slice(0, 200);
+		try {
+			await this.socket.request(
 				"notification.show",
 				{ title: safeTitle, body: safeBody, sound: "request" },
 				{ timeoutMs: 5_000 },
@@ -693,7 +796,7 @@ async function main() {
 	const socketPath = env.HERDR_SOCKET_PATH;
 	const pluginRoot =
 		env.HERDR_PLUGIN_ROOT ??
-		path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+		path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 	const configDir =
 		env.HERDR_PLUGIN_CONFIG_DIR ??
 		path.join(env.HOME ?? "~", ".config", "herdr-guard");
@@ -731,6 +834,7 @@ async function main() {
 		auditLog,
 		ownPaneId: env.HERDR_PANE_ID ?? null,
 		onRender: render,
+		onDisconnect: () => process.stdout.write("\x07"),
 	});
 
 	await socket.connect();

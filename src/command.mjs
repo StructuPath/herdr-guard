@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { ConfigStore, scanText } from "./policy.mjs";
+import { HerdrSocket } from "./herdr-socket.mjs";
+import { AuditLog } from "./audit.mjs";
 const root =
 	process.env.HERDR_PLUGIN_ROOT ??
 	path.resolve(new URL("..", import.meta.url).pathname);
@@ -42,26 +44,60 @@ function seed() {
 	s.seedIfMissing();
 	return s;
 }
+function parseDurationMs(value) {
+	if (!value) return 15 * 60 * 1000;
+	const match = /^(\d+)([smh]?)$/.exec(value);
+	if (!match) return null;
+	const amount = Number(match[1]);
+	const multiplier = match[2] === "h" ? 3_600_000 : match[2] === "m" ? 60_000 : 1_000;
+	return amount > 0 ? amount * multiplier : null;
+}
+async function openTestPopup() {
+	const socketPath = process.env.HERDR_SOCKET_PATH;
+	if (!socketPath) return { ok: false, error: "HERDR_SOCKET_PATH is not set" };
+	const socket = new HerdrSocket(socketPath);
+	try {
+		await socket.connect();
+		await socket.request("plugin.pane.open", {
+			plugin_id: "structupath.guard",
+			entrypoint: "test",
+			placement: "popup",
+			focus: true,
+		});
+		return { ok: true };
+	} catch (error) {
+		return { ok: false, error: error.message };
+	} finally {
+		socket.close();
+	}
+}
 const action = process.argv[2] ?? "status";
 if (action === "startup") {
 	seed();
 	ensureState();
 	const snapshot = await runCapture(["api", "snapshot"]);
+	if (snapshot.code !== 0) process.exit(snapshot.code);
 	let panes = [];
 	try {
 		const parsed = JSON.parse(snapshot.out);
-		panes = parsed?.result?.snapshot?.panes ?? parsed?.snapshot?.panes ?? parsed?.panes ?? [];
+		panes =
+			parsed?.result?.snapshot?.panes ??
+			parsed?.snapshot?.panes ??
+			parsed?.panes ??
+			[];
+	} catch {
+		console.error("invalid herdr snapshot response");
+		process.exit(1);
+	}
+	let storedPaneId = null;
+	try {
+		storedPaneId = fs
+			.readFileSync(path.join(stateDir, "guard-pane.id"), "utf8")
+			.trim();
 	} catch {}
-	const own = panes.find(
-		(p) =>
-			p?.plugin_id === "structupath.guard" || p?.plugin === "structupath.guard",
-	);
-	if (own?.pane_id)
-		fs.writeFileSync(
-			path.join(stateDir, "guard-pane.id"),
-			own.pane_id + "\n",
-			{ mode: 0o600 },
-		);
+	const own = storedPaneId
+		? panes.find((pane) => pane?.pane_id === storedPaneId)
+		: null;
 	if (!own)
 		process.exit(
 			await run([
@@ -90,7 +126,7 @@ if (action === "watchdog") {
 		const p = JSON.parse(payload);
 		eventId = p?.data?.pane_id ?? p?.pane_id;
 	} catch {}
-	if (id && (!eventId || eventId === id)) {
+	if (id && eventId === id) {
 		const marker = path.join(stateDir, "watchdog-reopen");
 		let recent = false;
 		try {
@@ -113,6 +149,7 @@ if (action === "watchdog") {
 				"notification",
 				"show",
 				"herdr-guard",
+				"--body",
 				"Guard pane exited; reopened it.",
 			]);
 		}
@@ -136,8 +173,17 @@ if (action === "open")
 	);
 const s = seed();
 if (action === "pause" || action === "resume") {
-	s.load();
-	const until = action === "pause" ? Date.now() + 15 * 60 * 1000 : null;
+	const loaded = s.load();
+	if (!loaded.config || loaded.error) {
+		console.error(loaded.error ?? "no valid configuration");
+		process.exit(1);
+	}
+	const ttlMs = action === "pause" ? parseDurationMs(process.argv[3]) : null;
+	if (action === "pause" && ttlMs === null) {
+		console.error("pause TTL must be seconds or use s/m/h, for example 300 or 5m");
+		process.exit(2);
+	}
+	const until = action === "pause" ? Date.now() + ttlMs : null;
 	const result = s.setEnforcement(action === "pause" ? "paused" : "active", {
 		pausedUntil: until,
 	});
@@ -145,6 +191,24 @@ if (action === "pause" || action === "resume") {
 		console.error(result.error);
 		process.exit(1);
 	}
+	ensureState();
+	new AuditLog(stateDir).write({
+		ts: Date.now(),
+		action_taken:
+			action === "pause" ? "enforcement-paused" : "enforcement-resumed",
+		source: "command",
+		note:
+			action === "pause"
+				? `manual pause until ${new Date(until).toISOString()}`
+				: "manual resume",
+	});
+	await run([
+		"notification",
+		"show",
+		"herdr-guard",
+		"--body",
+		`enforcement ${action === "pause" ? "paused" : "resumed"}`,
+	]);
 	console.log(
 		`${action}: enforcement ${action === "pause" ? "paused" : "active"}`,
 	);
@@ -164,8 +228,12 @@ if (action === "reset-rules") {
 if (action === "test") {
 	const input = process.argv.slice(3).join(" ");
 	if (!input) {
-		console.error("usage: action test <command text>");
-		process.exit(2);
+		const result = await openTestPopup();
+		if (!result.ok) {
+			console.error(result.error);
+			process.exit(1);
+		}
+		process.exit(0);
 	}
 	const loaded = s.load();
 	for (const match of scanText(`$ ${input}`, loaded.config?.rules ?? []))

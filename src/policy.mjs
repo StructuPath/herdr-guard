@@ -152,12 +152,14 @@ function escapeRegex(value) {
 }
 
 export function lineMatchesRule(line, rule, { paneType = null } = {}) {
-	if (
-		rule.prompt_only &&
-		!PROMPT_GLYPH_RE.test(line) &&
-		!(rule.severity === "interrupt" && paneType && paneType !== "shell")
-	)
-		return false;
+	// In a classified shell, prompt_only prevents ctrl+c from reacting to
+	// displayed documentation/log text. Non-shell panes still audit matching
+	// text; Guard.handleMatch downgrades interrupt actions there.
+	if (rule.prompt_only && paneType !== null && paneType === "shell") {
+		if (!PROMPT_GLYPH_RE.test(line)) return false;
+	} else if (rule.prompt_only && paneType === null) {
+		if (!PROMPT_GLYPH_RE.test(line)) return false;
+	}
 	return rule.re ? rule.re.test(line) : line.includes(rule.needle);
 }
 
@@ -259,7 +261,9 @@ export function normalizeConfig(raw) {
 		return { config: null, errors: ["config is not an object"] };
 	}
 	const enforcement = raw.enforcement ?? "active";
-	if (enforcement !== "active" && enforcement !== "paused") {
+	const invalidEnforcement =
+		enforcement !== "active" && enforcement !== "paused";
+	if (invalidEnforcement) {
 		errors.push(
 			`enforcement must be active|paused (got ${JSON.stringify(raw.enforcement)})`,
 		);
@@ -278,7 +282,9 @@ export function normalizeConfig(raw) {
 		rules,
 		raw,
 	};
-	if (errors.length > 0 && rules.length === 0) return { config: null, errors };
+	if (invalidEnforcement || (errors.length > 0 && rules.length === 0)) {
+		return { config: null, errors };
+	}
 	return { config, errors };
 }
 
@@ -299,7 +305,12 @@ export class ConfigStore {
 			fs.chmodSync(this.file, 0o600);
 			return false;
 		}
-		const defaults = JSON.parse(fs.readFileSync(this.defaultsPath, "utf8"));
+		let defaults;
+		try {
+			defaults = JSON.parse(fs.readFileSync(this.defaultsPath, "utf8"));
+		} catch (error) {
+			throw new Error(`invalid default rules: ${error.message}`, { cause: error });
+		}
 		writeJsonAtomic(this.file, defaults);
 		return true;
 	}
@@ -428,9 +439,19 @@ export function mergeProjectOverride(
 			continue;
 		}
 		try {
-			const compiled = compileRule(raw, { allowRegex: false });
+			const compiledRule = compileRule(raw, { allowRegex: false });
+			const compiled =
+				severityRank(compiledRule.severity) > severityRank("alert")
+					? { ...compiledRule, severity: "alert" }
+					: compiledRule;
 			merged.set(compiled.id, compiled);
-			applied.push({ kind: "add", rule: compiled.id });
+			applied.push({
+				kind: "add",
+				rule: compiled.id,
+				...(compiled.severity !== compiledRule.severity
+					? { capped_from: compiledRule.severity, capped_to: compiled.severity }
+					: {}),
+			});
 		} catch (err) {
 			rejected.push({
 				kind: "add",

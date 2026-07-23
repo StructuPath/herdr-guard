@@ -24,8 +24,10 @@ const SCALAR_FIELDS = new Set([
 ]);
 
 export class AuditLog {
-	constructor(stateDir) {
+	constructor(stateDir, { maxBytes = MAX_BYTES, generations = GENERATIONS } = {}) {
 		this.stateDir = stateDir;
+		this.maxBytes = maxBytes;
+		this.generations = generations;
 		fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 		fs.chmodSync(stateDir, 0o700);
 		this.files = {
@@ -44,7 +46,7 @@ export class AuditLog {
 
 	/** Rotate file -> .1 -> .2 -> .3 (oldest dropped). Permissions preserved. */
 	#rotate(file) {
-		for (let i = GENERATIONS - 1; i >= 1; i--) {
+		for (let i = this.generations - 1; i >= 1; i--) {
 			const from = `${file}.${i}`;
 			const to = `${file}.${i + 1}`;
 			if (fs.existsSync(from)) fs.renameSync(from, to);
@@ -70,7 +72,7 @@ export class AuditLog {
 				? this.files.interrupt
 				: this.files.general;
 		try {
-			if (fs.statSync(file).size >= MAX_BYTES) this.#rotate(file);
+			if (fs.statSync(file).size >= this.maxBytes) this.#rotate(file);
 		} catch {
 			/* stat failed — write anyway, rotation is best-effort */
 		}
@@ -81,19 +83,24 @@ export class AuditLog {
 	tail(n = 10) {
 		const entries = [];
 		for (const file of Object.values(this.files)) {
-			for (const candidate of [file, `${file}.1`, `${file}.2`, `${file}.3`]) {
-			try {
-				const lines = fs.readFileSync(candidate, "utf8").split("\n").filter(Boolean);
-				for (const line of lines) {
-					try {
-						entries.push(JSON.parse(line));
-					} catch {
-						/* skip corrupt line */
+			const candidates = [file];
+			for (let i = 1; i <= this.generations; i++) candidates.push(`${file}.${i}`);
+			for (const candidate of candidates) {
+				try {
+					const lines = fs
+						.readFileSync(candidate, "utf8")
+						.split("\n")
+						.filter(Boolean);
+					for (const line of lines) {
+						try {
+							entries.push(JSON.parse(line));
+						} catch {
+							/* skip corrupt line */
+						}
 					}
+				} catch {
+					/* missing file */
 				}
-			} catch {
-				/* missing file */
-			}
 			}
 		}
 		entries.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
