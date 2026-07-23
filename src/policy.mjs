@@ -58,7 +58,9 @@ export function validateRule(rule, { allowRegex = true } = {}) {
 			errors.push(`pattern exceeds ${MAX_PATTERN_LENGTH} chars`);
 		}
 		if (rule.match === "regex") {
-			if (/(\(\?[=!<]|\(\?<[^=!]|\\k<|\\[1-9]|\(\?<[A-Za-z_])/.test(rule.pattern)) {
+			if (
+				/(\(\?[=!<]|\(\?<[^=!]|\\k<|\\[1-9]|\(\?<[A-Za-z_])/.test(rule.pattern)
+			) {
 				errors.push("regex uses constructs unsupported by Rust regex");
 			}
 			if (rule.pattern.startsWith("^")) {
@@ -134,7 +136,9 @@ export function compileRules(rawRules, { allowRegex = true } = {}) {
  */
 export function buildCombinedPattern(rules) {
 	const parts = rules.map((r) =>
-		r.match === "regex" ? `(?:${r.pattern})` : escapeRegex(r.needle ?? r.pattern),
+		r.match === "regex"
+			? `(?:${r.pattern})`
+			: escapeRegex(r.needle ?? r.pattern),
 	);
 	return parts.length > 0 ? parts.join("|") : null;
 }
@@ -148,7 +152,12 @@ function escapeRegex(value) {
 }
 
 export function lineMatchesRule(line, rule, { paneType = null } = {}) {
-	if (rule.prompt_only && !PROMPT_GLYPH_RE.test(line) && !(rule.severity === "interrupt" && paneType && paneType !== "shell")) return false;
+	if (
+		rule.prompt_only &&
+		!PROMPT_GLYPH_RE.test(line) &&
+		!(rule.severity === "interrupt" && paneType && paneType !== "shell")
+	)
+		return false;
 	return rule.re ? rule.re.test(line) : line.includes(rule.needle);
 }
 
@@ -286,7 +295,10 @@ export class ConfigStore {
 	seedIfMissing() {
 		fs.mkdirSync(this.configDir, { recursive: true, mode: 0o700 });
 		fs.chmodSync(this.configDir, 0o700);
-		if (fs.existsSync(this.file)) { fs.chmodSync(this.file, 0o600); return false; }
+		if (fs.existsSync(this.file)) {
+			fs.chmodSync(this.file, 0o600);
+			return false;
+		}
 		const defaults = JSON.parse(fs.readFileSync(this.defaultsPath, "utf8"));
 		writeJsonAtomic(this.file, defaults);
 		return true;
@@ -363,8 +375,15 @@ export class ConfigStore {
 
 	/** Flip enforcement, preserving every other field. Used by pause/resume. */
 	setEnforcement(enforcement, { pausedUntil = null } = {}) {
-		if (!this.lastGood || !Array.isArray(this.lastGood.rules) || this.lastGood.rules.length === 0) {
-			return { config: null, error: "refusing enforcement change without a valid loaded config" };
+		if (
+			!this.lastGood ||
+			!Array.isArray(this.lastGood.rules) ||
+			this.lastGood.rules.length === 0
+		) {
+			return {
+				config: null,
+				error: "refusing enforcement change without a valid loaded config",
+			};
 		}
 		const base = this.lastGood.raw ?? {};
 		const next = { ...base, enforcement };
