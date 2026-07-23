@@ -4,6 +4,11 @@ Cross-agent command policy for [Herdr](https://herdr.dev): watch every pane,
 audit risky commands, notify you, and best-effort interrupt dangerous shell
 input.
 
+![herdr-guard policy dry-run demo](assets/herdr-guard-demo.gif)
+
+_Scripted dry-run using the real policy engine; the displayed command is never
+executed._
+
 ## Coverage (honest contract)
 
 | Pane | Guard sees | Interrupt guarantee |
@@ -89,6 +94,12 @@ herdr plugin list
 Tests use a fake NDJSON socket and temporary config/audit directories; they do
 not open panes or invoke live actions. The implementation uses plain ESM Node
 with no runtime dependencies.
+
+The demo is reproducible with [VHS](https://github.com/charmbracelet/vhs):
+
+```sh
+vhs assets/demo.tape
+```
 
 ## Future work
 
