@@ -8,7 +8,10 @@ import { once } from "node:events";
 import { HerdrSocket } from "../src/herdr-socket.mjs";
 
 function socketPath() {
-	return path.join(os.tmpdir(), `guard-${process.pid}-${Date.now()}-${Math.random()}.sock`);
+	return path.join(
+		os.tmpdir(),
+		`guard-${process.pid}-${Date.now()}-${Math.random()}.sock`,
+	);
 }
 
 function startProtocolServer(target, onConnection = null) {
@@ -23,7 +26,9 @@ function startProtocolServer(target, onConnection = null) {
 				const message = JSON.parse(buffer.slice(0, index));
 				buffer = buffer.slice(index + 1);
 				if (message.method === "ping") {
-					conn.write(`${JSON.stringify({ id: message.id, result: { type: "pong" } })}\n`);
+					conn.write(
+						`${JSON.stringify({ id: message.id, result: { type: "pong" } })}\n`,
+					);
 				} else if (message.method === "events.subscribe") {
 					conn.write(
 						`${JSON.stringify({ id: message.id, result: { type: "subscription_ack" } })}\n`,

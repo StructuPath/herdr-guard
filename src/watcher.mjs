@@ -130,7 +130,10 @@ export class Guard {
 
 		this.socket.on("disconnected", () => {
 			this.connected = false;
-			this.logSystem("disconnected", "Herdr socket disconnected; enforcement is down");
+			this.logSystem(
+				"disconnected",
+				"Herdr socket disconnected; enforcement is down",
+			);
 			this.onDisconnect?.();
 			this.scheduleRender();
 		});
@@ -284,7 +287,8 @@ export class Guard {
 		}
 		entry.reconciled = true;
 		const queued = entry.queued.splice(0);
-		for (const queuedMsg of queued) this.onPush(paneId, queuedMsg, { replay: true });
+		for (const queuedMsg of queued)
+			this.onPush(paneId, queuedMsg, { replay: true });
 		this.scheduleRender();
 	}
 

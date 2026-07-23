@@ -24,7 +24,10 @@ const SCALAR_FIELDS = new Set([
 ]);
 
 export class AuditLog {
-	constructor(stateDir, { maxBytes = MAX_BYTES, generations = GENERATIONS } = {}) {
+	constructor(
+		stateDir,
+		{ maxBytes = MAX_BYTES, generations = GENERATIONS } = {},
+	) {
 		this.stateDir = stateDir;
 		this.maxBytes = maxBytes;
 		this.generations = generations;
@@ -84,7 +87,8 @@ export class AuditLog {
 		const entries = [];
 		for (const file of Object.values(this.files)) {
 			const candidates = [file];
-			for (let i = 1; i <= this.generations; i++) candidates.push(`${file}.${i}`);
+			for (let i = 1; i <= this.generations; i++)
+				candidates.push(`${file}.${i}`);
 			for (const candidate of candidates) {
 				try {
 					const lines = fs

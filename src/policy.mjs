@@ -309,7 +309,9 @@ export class ConfigStore {
 		try {
 			defaults = JSON.parse(fs.readFileSync(this.defaultsPath, "utf8"));
 		} catch (error) {
-			throw new Error(`invalid default rules: ${error.message}`, { cause: error });
+			throw new Error(`invalid default rules: ${error.message}`, {
+				cause: error,
+			});
 		}
 		writeJsonAtomic(this.file, defaults);
 		return true;

@@ -49,7 +49,8 @@ function parseDurationMs(value) {
 	const match = /^(\d+)([smh]?)$/.exec(value);
 	if (!match) return null;
 	const amount = Number(match[1]);
-	const multiplier = match[2] === "h" ? 3_600_000 : match[2] === "m" ? 60_000 : 1_000;
+	const multiplier =
+		match[2] === "h" ? 3_600_000 : match[2] === "m" ? 60_000 : 1_000;
 	return amount > 0 ? amount * multiplier : null;
 }
 async function openTestPopup() {
@@ -180,7 +181,9 @@ if (action === "pause" || action === "resume") {
 	}
 	const ttlMs = action === "pause" ? parseDurationMs(process.argv[3]) : null;
 	if (action === "pause" && ttlMs === null) {
-		console.error("pause TTL must be seconds or use s/m/h, for example 300 or 5m");
+		console.error(
+			"pause TTL must be seconds or use s/m/h, for example 300 or 5m",
+		);
 		process.exit(2);
 	}
 	const until = action === "pause" ? Date.now() + ttlMs : null;

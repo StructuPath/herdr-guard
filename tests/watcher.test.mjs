@@ -58,7 +58,11 @@ class FakeSocket extends EventEmitter {
 			// Herdr replays matching scrollback immediately around the ack.
 			callback({
 				event: "pane.output_matched",
-				data: { pane_id: "p1", matched_line: this.baseline, read: { text: this.baseline } },
+				data: {
+					pane_id: "p1",
+					matched_line: this.baseline,
+					read: { text: this.baseline },
+				},
 			});
 		}
 		return { subscriptionId: "sub", ack: { type: "subscription_ack" } };
@@ -81,7 +85,11 @@ function makeGuard(
 		socket,
 		configStore: {
 			load: () => ({
-				config: { enforcement: "active", paused_until: null, rules: [interruptRule] },
+				config: {
+					enforcement: "active",
+					paused_until: null,
+					rules: [interruptRule],
+				},
 				warnings: [],
 			}),
 			reloadIfChanged: () => ({ changed: false }),
@@ -90,7 +98,11 @@ function makeGuard(
 		now,
 		onDisconnect,
 	});
-	guard.config = { enforcement: "active", paused_until: null, rules: [interruptRule] };
+	guard.config = {
+		enforcement: "active",
+		paused_until: null,
+		rules: [interruptRule],
+	};
 	return { guard, entries };
 }
 
@@ -102,8 +114,14 @@ test("bootstrap unwraps snapshot and suppresses replay queued before reconciliat
 	await guard.bootstrap();
 	assert.equal(guard.connected, true);
 	assert.equal(guard.panes.get("p1").paneType, "shell");
-	assert.equal(socket.calls.some((call) => call.method === "pane.send_keys"), false);
-	assert.equal(entries.some((entry) => entry.rule_id === "danger"), false);
+	assert.equal(
+		socket.calls.some((call) => call.method === "pane.send_keys"),
+		false,
+	);
+	assert.equal(
+		entries.some((entry) => entry.rule_id === "danger"),
+		false,
+	);
 });
 
 test("repeated shell interrupts are never deduped and notifications coalesce", async () => {
@@ -113,7 +131,11 @@ test("repeated shell interrupts are never deduped and notifications coalesce", a
 	await guard.bootstrap();
 	const event = {
 		event: "pane.output_matched",
-		data: { pane_id: "p1", matched_line: "$ danger now", read: { text: "$ danger now" } },
+		data: {
+			pane_id: "p1",
+			matched_line: "$ danger now",
+			read: { text: "$ danger now" },
+		},
 	};
 	socket.outputCallback(event);
 	await settle();
@@ -123,7 +145,10 @@ test("repeated shell interrupts are never deduped and notifications coalesce", a
 	const sends = socket.calls.filter((call) => call.method === "pane.send_keys");
 	assert.equal(sends.length, 2);
 	assert.deepEqual(sends[0].params, { pane_id: "p1", keys: ["ctrl+c"] });
-	assert.equal(socket.calls.filter((call) => call.method === "notification.show").length, 1);
+	assert.equal(
+		socket.calls.filter((call) => call.method === "notification.show").length,
+		1,
+	);
 	assert.equal(entries.filter((entry) => entry.rule_id === "danger").length, 2);
 });
 
@@ -136,7 +161,10 @@ test("interrupt text in a non-shell pane audits without sending keys", async () 
 	});
 	assert.equal(matches.length, 1);
 	await guard.handleMatch(guard.panes.get("p1"), matches[0], "test");
-	assert.equal(socket.calls.some((call) => call.method === "pane.send_keys"), false);
+	assert.equal(
+		socket.calls.some((call) => call.method === "pane.send_keys"),
+		false,
+	);
 	assert.equal(entries.at(-1).action_taken, "logged-non-shell");
 });
 
@@ -146,9 +174,14 @@ test("valid config changes reset the socket and fully bootstrap subscriptions", 
 	const { guard } = makeGuard(socket);
 	guard.configStore.reloadIfChanged = () =>
 		changed
-			? ((changed = false), {
+			? ((changed = false),
+				{
 					changed: true,
-					config: { enforcement: "active", paused_until: null, rules: [interruptRule] },
+					config: {
+						enforcement: "active",
+						paused_until: null,
+						rules: [interruptRule],
+					},
 				})
 			: { changed: false };
 	await guard.bootstrap();

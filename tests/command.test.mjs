@@ -79,7 +79,10 @@ test("startup opens once when stored guard pane is absent and skips when present
 	result = runCommand(["startup"], env);
 	assert.equal(result.status, 0, result.stderr);
 	assert.deepEqual(calls(f.log), [["api", "snapshot"]]);
-	assert.equal(fs.readFileSync(path.join(f.stateDir, "guard-pane.id"), "utf8"), "p1\n");
+	assert.equal(
+		fs.readFileSync(path.join(f.stateDir, "guard-pane.id"), "utf8"),
+		"p1\n",
+	);
 });
 
 test("watchdog reopens only the exact guard pane and dedupes closed/exited pair", () => {
@@ -126,7 +129,8 @@ test("pause refuses malformed config without modifying it and accepts TTL", () =
 	assert.match(audit, /enforcement-paused/);
 	assert.ok(
 		calls(f.log).some(
-			(args) => args[0] === "notification" && args.includes("enforcement paused"),
+			(args) =>
+				args[0] === "notification" && args.includes("enforcement paused"),
 		),
 	);
 });
@@ -166,7 +170,10 @@ test("test action without text requests the declared popup pane", async () => {
 });
 
 test("manifest declares required lifecycle and executable entrypoints", () => {
-	const manifest = fs.readFileSync(path.join(root, "herdr-plugin.toml"), "utf8");
+	const manifest = fs.readFileSync(
+		path.join(root, "herdr-plugin.toml"),
+		"utf8",
+	);
 	assert.match(manifest, /min_herdr_version = "0\.7\.5"/);
 	for (const value of [
 		'id = "open"',
@@ -177,8 +184,15 @@ test("manifest declares required lifecycle and executable entrypoints", () => {
 		'id = "guard"',
 		'on = "pane.closed"',
 		'on = "pane.exited"',
-	]) assert.match(manifest, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	])
+		assert.match(
+			manifest,
+			new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+		);
 	for (const script of fs.readdirSync(path.join(root, "scripts"))) {
-		assert.ok(fs.statSync(path.join(root, "scripts", script)).mode & 0o100, script);
+		assert.ok(
+			fs.statSync(path.join(root, "scripts", script)).mode & 0o100,
+			script,
+		);
 	}
 });

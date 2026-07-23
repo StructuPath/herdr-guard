@@ -101,7 +101,10 @@ test("project overrides stay substring-only and cap severity", () => {
 	);
 	assert.equal(result.rules.find((r) => r.id === "danger").severity, "alert");
 	assert.equal(result.rules.find((r) => r.id === "local").severity, "alert");
-	assert.equal(result.rules.some((r) => r.id === "regex-local"), false);
+	assert.equal(
+		result.rules.some((r) => r.id === "regex-local"),
+		false,
+	);
 	assert.ok(result.rejected.some((entry) => entry.rule === "regex-local"));
 	assert.ok(result.rejected.some((entry) => entry.rule === "danger"));
 });
@@ -157,13 +160,21 @@ test("audit log enforces modes, partitions, rotates, and removes secrets/control
 		pane_id: "p",
 	});
 	for (let ts = 2; ts <= 8; ts++) {
-		log.write({ ts, severity: "alert", matched_text: `npm publish ${ts}`, pane_id: "p" });
+		log.write({
+			ts,
+			severity: "alert",
+			matched_text: `npm publish ${ts}`,
+			pane_id: "p",
+		});
 	}
 	assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
 	for (const file of ["audit.jsonl", "audit.interrupt.jsonl"]) {
 		assert.equal(fs.statSync(path.join(dir, file)).mode & 0o777, 0o600);
 	}
-	const interrupt = fs.readFileSync(path.join(dir, "audit.interrupt.jsonl"), "utf8");
+	const interrupt = fs.readFileSync(
+		path.join(dir, "audit.interrupt.jsonl"),
+		"utf8",
+	);
 	assert.match(interrupt, /REDACTED/);
 	assert.doesNotMatch(interrupt, /secret|sk-abcdefghijk|https:\/\/evil|\x1b/);
 	const parsed = JSON.parse(interrupt.trim());
