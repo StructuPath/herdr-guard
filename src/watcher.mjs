@@ -14,6 +14,7 @@ import {
 	RateLimiter,
 	buildCombinedPattern,
 	classifyPane,
+	cleanField,
 	mergeProjectOverride,
 	scanText,
 	severityRank,
@@ -64,7 +65,8 @@ function extractPanes(snapshot) {
 }
 
 function eventPayload(msg) {
-	if (typeof msg?.event === "string") return { ...(msg.data ?? {}), type: msg.event };
+	if (typeof msg?.event === "string")
+		return { ...(msg.data ?? {}), type: msg.event };
 	return msg?.event ?? msg?.result ?? msg;
 }
 
@@ -180,7 +182,10 @@ export class Guard {
 	isOwnPane(pane) {
 		if (!pane) return false;
 		if (this.ownPaneId && pane.pane_id === this.ownPaneId) return true;
-		return pane.plugin_id === "structupath.guard" || pane.plugin === "structupath.guard";
+		return (
+			pane.plugin_id === "structupath.guard" ||
+			pane.plugin === "structupath.guard"
+		);
 	}
 
 	async watchPane(pane) {
@@ -231,6 +236,10 @@ export class Guard {
 			}
 		}
 
+		// Resolve process metadata before releasing queued replay events, so the first
+		// real shell interrupt is classified correctly.
+		await this.refreshPaneInfo(entry);
+
 		// 2) THEN reconcile: baseline read. Content-based replay suppression
 		//    compares push events against this set.
 		try {
@@ -243,6 +252,17 @@ export class Guard {
 		const queued = entry.queued.splice(0);
 		for (const queuedMsg of queued) this.onPush(paneId, queuedMsg);
 		this.scheduleRender();
+	}
+
+	async refreshPaneInfo(entry) {
+		try {
+			const info = await this.socket.request("pane.process_info", { pane_id: entry.id }, { timeoutMs: 3_000 });
+			const fg = info?.result?.process_info?.foreground_processes?.[0] ?? info?.process_info?.foreground_processes?.[0] ?? null;
+			if (!fg) return;
+			entry.paneType = classifyPane(fg.process_name ?? fg.name ?? fg.argv0 ?? "", fg.terminal_title ?? "");
+			const cwd = fg.cwd ?? null;
+			if (cwd && cwd !== entry.cwd) { this.overrideCache.delete(entry.cwd); entry.cwd = cwd; }
+		} catch { /* metadata is best effort */ }
 	}
 
 	async readPane(paneId, lines = 120) {
@@ -433,10 +453,24 @@ export class Guard {
 				{ pane_id: paneId },
 				{ timeoutMs: 3_000 },
 			);
-			const fg = info?.result?.process_info?.foreground_processes?.[0] ?? info?.process_info?.foreground_processes?.[0] ?? info?.foreground_processes?.[0] ?? info?.foreground?.[0] ?? info?.processes?.[0] ?? null;
-			processArgv = Array.isArray(fg?.process_argv) ? fg.process_argv.join(" ") : fg?.argv?.join(" ") ?? fg?.cmdline ?? fg?.name ?? null;
-			paneType = classifyPane(fg?.process_name ?? fg?.name ?? "", fg?.terminal_title ?? "");
-			if (fg?.cwd && fg.cwd !== entry.cwd) { this.overrideCache.delete(entry.cwd); entry.cwd = fg.cwd; }
+			const fg =
+				info?.result?.process_info?.foreground_processes?.[0] ??
+				info?.process_info?.foreground_processes?.[0] ??
+				info?.foreground_processes?.[0] ??
+				info?.foreground?.[0] ??
+				info?.processes?.[0] ??
+				null;
+			processArgv = Array.isArray(fg?.process_argv)
+				? fg.process_argv.join(" ")
+				: (fg?.argv?.join(" ") ?? fg?.cmdline ?? fg?.name ?? null);
+			paneType = classifyPane(
+				fg?.process_name ?? fg?.name ?? "",
+				fg?.terminal_title ?? "",
+			);
+			if (fg?.cwd && fg.cwd !== entry.cwd) {
+				this.overrideCache.delete(entry.cwd);
+				entry.cwd = fg.cwd;
+			}
 		} catch {
 			/* enrichment is optional */
 		}
@@ -449,7 +483,8 @@ export class Guard {
 			if (notified && action === "logged") action = "notified";
 		}
 		entry.paneType = paneType;
-		if (severity === "interrupt" && paneType !== "shell") action = "logged-non-shell";
+		if (severity === "interrupt" && paneType !== "shell")
+			action = "logged-non-shell";
 
 		this.audit.write({
 			ts: now,
@@ -530,6 +565,8 @@ export class Guard {
 		const prev = this.config;
 		this.config = result.config;
 		this.overrideCache.clear();
+		this.connected = false;
+		this.bootstrap().catch(() => {});
 		this.audit.write({
 			ts: this.now(),
 			action_taken: "config-change",
@@ -572,10 +609,12 @@ export class Guard {
 	// --- actions (best-effort wrappers) -----------------------------------------
 
 	async notify(title, body) {
-		try {
-			await this.socket.request(
+			const safeTitle = cleanField(String(title)).slice(0, 200);
+			const safeBody = cleanField(String(body)).slice(0, 200);
+			try {
+				await this.socket.request(
 				"notification.show",
-				{ title, body, sound: "request" },
+				{ title: safeTitle, body: safeBody, sound: "request" },
 				{ timeoutMs: 5_000 },
 			);
 			return true;

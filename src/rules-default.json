@@ -56,7 +56,7 @@
       "id": "sudo",
       "severity": "alert",
       "match": "regex",
-      "pattern": "(^|&&|;|\\|\\|)\\s*sudo\\s",
+      "pattern": "(^|[$❯%╰─]|&&|;|\\|\\|)\\s*sudo\\s",
       "reason": "Elevated-privilege command"
     },
     {

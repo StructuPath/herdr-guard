@@ -47,6 +47,12 @@ title = "Guard"
 placement = "split"
 command = ["bash", "scripts/guard-pane.sh"]
 
+[[panes]]
+id = "test"
+title = "Test guard command"
+placement = "popup"
+command = ["bash", "scripts/test-pane.sh"]
+
 [[events]]
 on = "pane.closed"
 command = ["bash", "scripts/watchdog.sh"]

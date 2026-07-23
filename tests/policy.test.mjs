@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { AuditLog } from "../src/audit.mjs";
+import defaultRules from "../src/rules-default.json" with { type: "json" };
 import {
 	ConfigStore,
 	Dedupe,
@@ -25,6 +26,22 @@ const rule = (extra = {}) => ({
 	reason: "danger",
 	...extra,
 });
+
+test("default sudo rule matches decorated prompts", () => {
+	const sudo = compileRule(defaultRules.rules.find((r) => r.id === "sudo"));
+	for (const line of ["$ sudo rm", "❯ sudo rm", "% sudo rm", "╰─ sudo rm"]) {
+		assert.equal(scanText(line, [sudo]).length, 1, line);
+	}
+});
+
+test("audit tail includes rotated generations", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-"));
+	const log = new AuditLog(dir);
+	for (const [i, suffix] of enumerate(["", ".1", ".2", ".3"])) fs.writeFileSync(path.join(dir, `audit.jsonl${suffix}`), JSON.stringify({ ts: i + 1, note: `g${i}` }) + "\n");
+	assert.deepEqual(log.tail(4).map((x) => x.note), ["g0", "g1", "g2", "g3"]);
+});
+
+function* enumerate(values) { let i = 0; for (const value of values) yield [i++, value]; }
 
 test("prompt-only matching and combined patterns", () => {
 	const compiled = [compileRule(rule())];

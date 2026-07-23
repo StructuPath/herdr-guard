@@ -29,7 +29,7 @@ Code hook) POSTing tool calls to the guard for unified audit+policy.
 Stack: **plain ESM Node.js (>= 20), zero runtime deps**, bash shims in the
 manifest. Same stack as herdr-swarm / herdr-browser.
 
-```
+```text
 herdr-guard/
   herdr-plugin.toml
   scripts/*.sh            # manifest entrypoint shims

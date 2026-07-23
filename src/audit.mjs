@@ -81,8 +81,9 @@ export class AuditLog {
 	tail(n = 10) {
 		const entries = [];
 		for (const file of Object.values(this.files)) {
+			for (const candidate of [file, `${file}.1`, `${file}.2`, `${file}.3`]) {
 			try {
-				const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+				const lines = fs.readFileSync(candidate, "utf8").split("\n").filter(Boolean);
 				for (const line of lines) {
 					try {
 						entries.push(JSON.parse(line));
@@ -92,6 +93,7 @@ export class AuditLog {
 				}
 			} catch {
 				/* missing file */
+			}
 			}
 		}
 		entries.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
