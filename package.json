@@ -2,9 +2,28 @@
   "name": "herdr-guard",
   "version": "0.1.0",
   "private": false,
-  "description": "Cross-agent command policy layer for Herdr — watch every pane, audit, alert, interrupt",
+  "description": "Cross-agent command policy layer for Herdr — watch panes, audit, alert, and interrupt",
   "type": "module",
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/StructuPath/herdr-guard.git"
+  },
+  "homepage": "https://github.com/StructuPath/herdr-guard#readme",
+  "bugs": {
+    "url": "https://github.com/StructuPath/herdr-guard/issues"
+  },
+  "keywords": [
+    "herdr",
+    "herdr-plugin",
+    "ai-agents",
+    "command-policy",
+    "security"
+  ],
   "license": "MIT"
 }

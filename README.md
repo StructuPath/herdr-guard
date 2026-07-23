@@ -30,10 +30,11 @@ For local development:
 herdr plugin link /path/to/herdr-guard
 ```
 
-The startup hook seeds the per-user rules file. Open the Guard pane from the
-plugin action list, or invoke `structupath.guard.open`. The pane subscribes to
-Herdr's `pane.output_matched` events and maintains a local `pane.read` sweep
-backstop. It does not open or modify other panes during installation.
+The startup hook seeds the per-user rules file and idempotently opens the Guard
+pane. You can also focus or reopen it from the plugin action list with
+`structupath.guard.open`. The pane subscribes to Herdr's
+`pane.output_matched` events and maintains a local `pane.read` sweep backstop.
+It does not modify other panes during installation.
 
 ## Actions
 
@@ -50,11 +51,12 @@ at `$HERDR_PLUGIN_STATE_DIR`. Both directories are private (`0700`) and files
 are written `0600`. The configuration supports `audit`, `alert`, and
 `interrupt` severity, `regex` or `substring` matching, and `prompt_only`.
 
-A workspace may add substring rules in `.herdr-guard.json`. Workspace rules
-cannot disable or lower global rules; project raises are capped at `alert`
-unless the user explicitly enables `allow_project_override` in the global
-configuration. Configuration writes are atomic and malformed updates keep the
-last known-good policy.
+A workspace may add substring rules in `.herdr-guard.json`. Project rules and
+severity raises are always capped at `alert`; repository-controlled regex and
+interrupt rules are rejected. Workspace rules cannot disable or lower global
+rules unless the user explicitly enables `allow_project_override` in the
+global configuration. Configuration writes are atomic and malformed updates
+keep the last known-good policy.
 
 The shipped policy covers destructive filesystem/Git/infrastructure commands,
 secret-file reads, publishing, data exfiltration, and evasion indicators such
