@@ -4,6 +4,10 @@ Cross-agent command policy for [Herdr](https://herdr.dev): watch every pane,
 audit risky commands, notify you, and best-effort interrupt dangerous shell
 input.
 
+**Docs:** the [StructuPath Herdr Plugins wiki](https://github.com/StructuPath/herdr-browser/wiki)
+is the practical guide to this plugin and its three siblings (Browser, Swarm,
+Conductor).
+
 ![herdr-guard policy dry-run demo](assets/herdr-guard-demo.gif)
 
 _Scripted dry-run using the real policy engine; the displayed command is never
