@@ -42,6 +42,8 @@ test("manifest validation reports version, entrypoint, and executable-bit failur
 
 	const { errors } = validateRepository(dir);
 	assert.ok(errors.some((error) => error.startsWith("version mismatch:")));
-	assert.ok(errors.some((error) => error.includes("entrypoint does not exist")));
+	assert.ok(
+		errors.some((error) => error.includes("entrypoint does not exist")),
+	);
 	assert.ok(errors.some((error) => error.includes("script is not executable")));
 });

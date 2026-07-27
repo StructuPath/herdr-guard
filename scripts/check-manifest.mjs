@@ -18,7 +18,9 @@ function parseManifest(manifestPath) {
 		encoding: "utf8",
 	});
 	if (result.error) {
-		throw new Error(`could not run python3 to parse the manifest: ${result.error.message}`);
+		throw new Error(
+			`could not run python3 to parse the manifest: ${result.error.message}`,
+		);
 	}
 	if (result.status !== 0) {
 		throw new Error(`manifest is not valid TOML: ${result.stderr.trim()}`);
@@ -36,7 +38,9 @@ function manifestCommands(manifest, errors) {
 		}
 		for (const [index, entry] of entries.entries()) {
 			if (!Array.isArray(entry.command) || entry.command.length === 0) {
-				errors.push(`${section}[${index}] must declare a non-empty command array`);
+				errors.push(
+					`${section}[${index}] must declare a non-empty command array`,
+				);
 				continue;
 			}
 			commands.push({ label: `${section}[${index}]`, command: entry.command });
@@ -47,7 +51,8 @@ function manifestCommands(manifest, errors) {
 
 function commandEntrypoint(command) {
 	if (["bash", "node", "sh"].includes(command[0])) return command[1];
-	if (typeof command[0] === "string" && command[0].includes("/")) return command[0];
+	if (typeof command[0] === "string" && command[0].includes("/"))
+		return command[0];
 	return null;
 }
 
@@ -57,7 +62,9 @@ export function validateRepository(root) {
 	let manifest;
 
 	try {
-		packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+		packageJson = JSON.parse(
+			fs.readFileSync(path.join(root, "package.json"), "utf8"),
+		);
 	} catch (error) {
 		errors.push(`package.json could not be parsed: ${error.message}`);
 	}
@@ -68,7 +75,8 @@ export function validateRepository(root) {
 		errors.push(error.message);
 	}
 
-	if (!packageJson || !manifest) return { errors, entrypointCount: 0, scriptCount: 0 };
+	if (!packageJson || !manifest)
+		return { errors, entrypointCount: 0, scriptCount: 0 };
 
 	if (typeof manifest.version !== "string") {
 		errors.push("manifest version must be a string");
@@ -105,7 +113,8 @@ export function validateRepository(root) {
 	if (scripts.length === 0) errors.push("no scripts found in scripts/");
 	for (const script of scripts) {
 		const mode = fs.statSync(path.join(scriptsDir, script)).mode;
-		if ((mode & 0o100) === 0) errors.push(`script is not executable: scripts/${script}`);
+		if ((mode & 0o100) === 0)
+			errors.push(`script is not executable: scripts/${script}`);
 	}
 
 	return { errors, entrypointCount, scriptCount: scripts.length };
