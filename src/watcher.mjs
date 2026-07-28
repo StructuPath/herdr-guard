@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 import { HerdrSocket } from "./herdr-socket.mjs";
 import { AuditLog } from "./audit.mjs";
 import {
+	ensureGuardSessionStateDir,
+	recordGuardPaneId,
+} from "./session-state.mjs";
+import {
 	ConfigStore,
 	Dedupe,
 	RateLimiter,
@@ -1109,8 +1113,10 @@ async function main() {
 		return;
 	}
 
-	fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-	fs.chmodSync(stateDir, 0o700);
+	ensureGuardSessionStateDir(stateDir, socketPath);
+	// Publish identity before any other startup I/O so early exits are recognized.
+	if (env.HERDR_PANE_ID)
+		recordGuardPaneId(stateDir, socketPath, env.HERDR_PANE_ID);
 
 	const configStore = new ConfigStore({
 		configDir,
@@ -1135,19 +1141,6 @@ async function main() {
 	});
 
 	await guard.start();
-
-	// Record our pane id so the watchdog event hook can recognize our death.
-	if (env.HERDR_PANE_ID) {
-		try {
-			fs.writeFileSync(
-				path.join(stateDir, "guard-pane.id"),
-				env.HERDR_PANE_ID,
-				{ mode: 0o600 },
-			);
-		} catch {
-			/* best-effort */
-		}
-	}
 
 	// Sibling-session awareness: other named sessions have their own sockets
 	// and are NOT guarded.
