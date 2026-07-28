@@ -5,17 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { Guard } from "../src/watcher.mjs";
-import { compileRule, scanText } from "../src/policy.mjs";
+import { ConfigStore, compileRule, scanText } from "../src/policy.mjs";
 import { renderDashboard } from "../src/render.mjs";
 
-const interruptRule = compileRule({
+const interruptRuleInput = {
 	id: "danger",
 	severity: "interrupt",
 	match: "substring",
 	pattern: "danger",
 	prompt_only: true,
 	reason: "dangerous command",
-});
+};
+const interruptRule = compileRule(interruptRuleInput);
 
 class FakeSocket extends EventEmitter {
 	constructor({
@@ -121,13 +122,14 @@ function makeGuard(
 		onDisconnect = null,
 		bootstrapRetryMs = 1_000,
 		projectSubscriptionRetryMs = 1_000,
+		configStore = null,
 	} = {},
 ) {
 	socket.paneName = paneName;
 	const entries = [];
 	const guard = new Guard({
 		socket,
-		configStore: {
+		configStore: configStore ?? {
 			load: () => ({
 				config: {
 					enforcement: "active",
@@ -629,21 +631,79 @@ test("failed config bootstrap audits failure then eventual retry application", a
 	guard.stop();
 });
 
-test("invalid config changes emit detected and failed evidence", async () => {
-	const socket = new FakeSocket({ baseline: "" });
-	const { guard, entries } = makeGuard(socket);
-	guard.configStore.reloadIfChanged = () => ({
-		changed: true,
-		error: "parse failed",
-	});
-
-	await guard.configTick();
-	assert.deepEqual(
-		entries.map((entry) => entry.action_taken),
-		["config-change-detected", "config-change-failed"],
+test("config polling reports each bad generation once and applies recovery", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-config-poll-"));
+	const defaultsPath = path.join(dir, "defaults.json");
+	const configFile = path.join(dir, "rules.json");
+	fs.writeFileSync(
+		defaultsPath,
+		JSON.stringify({ version: 1, rules: [interruptRuleInput] }),
 	);
-	assert.equal(guard.connected, false);
+	const configStore = new ConfigStore({ configDir: dir, defaultsPath });
+	const initialConfig = configStore.load().config;
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard, entries } = makeGuard(socket, { configStore });
+	guard.config = initialConfig;
+
+	const writeGeneration = (contents, seconds) => {
+		fs.writeFileSync(configFile, contents);
+		fs.utimesSync(configFile, seconds, seconds);
+		assert.equal(fs.statSync(configFile).mtimeMs, seconds * 1000);
+	};
+	const configActions = () =>
+		entries
+			.filter((entry) => entry.action_taken?.startsWith("config-change-"))
+			.map((entry) => entry.action_taken);
+	const notificationBodies = () =>
+		socket.calls
+			.filter((call) => call.method === "notification.show")
+			.map((call) => call.params.body);
+
+	writeGeneration("{", 1_700_000_011);
+	await guard.configTick();
+	await guard.configTick();
+	assert.deepEqual(configActions(), [
+		"config-change-detected",
+		"config-change-failed",
+	]);
+	assert.equal(notificationBodies().length, 2);
+	assert.equal(guard.config, initialConfig);
 	assert.equal(guard.config.rules.length, 1);
+
+	writeGeneration("{\"rules\":", 1_700_000_012);
+	await guard.configTick();
+	await guard.configTick();
+	assert.deepEqual(configActions(), [
+		"config-change-detected",
+		"config-change-failed",
+		"config-change-detected",
+		"config-change-failed",
+	]);
+	assert.equal(notificationBodies().length, 4);
+	assert.equal(guard.config, initialConfig);
+
+	writeGeneration(
+		JSON.stringify({
+			version: 1,
+			enforcement: "paused",
+			rules: [interruptRuleInput],
+		}),
+		1_700_000_013,
+	);
+	await guard.configTick();
+	await guard.configTick();
+	assert.deepEqual(configActions(), [
+		"config-change-detected",
+		"config-change-failed",
+		"config-change-detected",
+		"config-change-failed",
+		"config-change-detected",
+		"config-change-applied",
+	]);
+	assert.equal(notificationBodies().length, 6);
+	assert.equal(guard.config.enforcement, "paused");
+	assert.equal(guard.config.rules.length, 1);
+	assert.equal(socket.resetCount, 1);
 });
 
 test("dashboard reports load warnings and matches for this run only", () => {

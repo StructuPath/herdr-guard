@@ -150,6 +150,50 @@ test("ConfigStore keeps last good config after invalid JSON or enforcement", () 
 	assert.match(invalid.error, /enforcement must be active\|paused/);
 });
 
+test("ConfigStore attempts each malformed file generation once and recovers", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-generations-"));
+	const defaults = path.join(dir, "defaults.json");
+	const file = path.join(dir, "rules.json");
+	fs.writeFileSync(defaults, JSON.stringify({ version: 1, rules: [rule()] }));
+	const store = new ConfigStore({ configDir: dir, defaultsPath: defaults });
+	const first = store.load().config;
+	assert.ok(first);
+
+	const writeGeneration = (contents, seconds) => {
+		fs.writeFileSync(file, contents);
+		fs.utimesSync(file, seconds, seconds);
+		assert.equal(fs.statSync(file).mtimeMs, seconds * 1000);
+	};
+
+	writeGeneration("{", 1_700_000_001);
+	const parseFailure = store.reloadIfChanged();
+	assert.equal(parseFailure.changed, true);
+	assert.equal(parseFailure.config, first);
+	assert.match(parseFailure.error, /parse failed/);
+	assert.deepEqual(store.reloadIfChanged(), { changed: false });
+
+	writeGeneration(
+		JSON.stringify({ enforcement: "disabled", rules: [rule()] }),
+		1_700_000_002,
+	);
+	const validationFailure = store.reloadIfChanged();
+	assert.equal(validationFailure.changed, true);
+	assert.equal(validationFailure.config, first);
+	assert.match(validationFailure.error, /enforcement must be active\|paused/);
+	assert.deepEqual(store.reloadIfChanged(), { changed: false });
+
+	writeGeneration(
+		JSON.stringify({ enforcement: "paused", rules: [rule()] }),
+		1_700_000_003,
+	);
+	const recovered = store.reloadIfChanged();
+	assert.equal(recovered.changed, true);
+	assert.equal(recovered.error, null);
+	assert.equal(recovered.config.enforcement, "paused");
+	assert.notEqual(recovered.config, first);
+	assert.deepEqual(store.reloadIfChanged(), { changed: false });
+});
+
 test("audit log enforces modes, partitions, rotates, and removes secrets/control bytes", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-audit-"));
 	const log = new AuditLog(dir, { maxBytes: 80, generations: 3 });
