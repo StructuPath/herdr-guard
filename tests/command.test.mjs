@@ -150,10 +150,7 @@ test("reset-rules audits bounded counts and requests a notification", () => {
 	const defaults = JSON.parse(
 		fs.readFileSync(path.join(root, "src", "rules-default.json"), "utf8"),
 	);
-	assert.equal(
-		JSON.parse(fs.readFileSync(rules, "utf8")).rules.length,
-		defaults.rules.length,
-	);
+	assert.equal(JSON.parse(fs.readFileSync(rules, "utf8")).rules.length, defaults.rules.length);
 	const backups = fs
 		.readdirSync(f.configDir)
 		.filter((name) => name.startsWith("rules.json.backup-"));
@@ -164,10 +161,7 @@ test("reset-rules audits bounded counts and requests a notification", () => {
 		.split("\n")
 		.map(JSON.parse);
 	assert.equal(audit.at(-1).action_taken, "rules-reset");
-	assert.match(
-		audit.at(-1).note,
-		new RegExp(`rules 2 -> ${defaults.rules.length}`),
-	);
+	assert.match(audit.at(-1).note, new RegExp(`rules 2 -> ${defaults.rules.length}`));
 	assert.ok(
 		calls(f.log).some(
 			(args) =>

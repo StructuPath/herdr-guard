@@ -613,7 +613,11 @@ test("failed config bootstrap audits failure then eventual retry application", a
 		entries
 			.filter((entry) => entry.action_taken?.startsWith("config-change-"))
 			.map((entry) => entry.action_taken),
-		["config-change-detected", "config-change-failed", "config-change-applied"],
+		[
+			"config-change-detected",
+			"config-change-failed",
+			"config-change-applied",
+		],
 	);
 	assert.equal(guard.renderState().loadWarnings, 1);
 	const notificationBodies = socket.calls

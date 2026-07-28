@@ -211,7 +211,8 @@ export class Guard {
 					{ type: "pane.exited" },
 				],
 				(msg) => {
-					if (generation === this.bootstrapGeneration) this.onLifecycle(msg);
+					if (generation === this.bootstrapGeneration)
+						this.onLifecycle(msg);
 				},
 			);
 			if (generation !== this.bootstrapGeneration) {
