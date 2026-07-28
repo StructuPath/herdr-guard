@@ -105,6 +105,9 @@ export class Guard {
 		this.timers = [];
 		this.renderTimer = null;
 		this.bootstrapRetryTimer = null;
+		this.lifecycleReconcileTimer = null;
+		this.lifecycleReconcileRunning = false;
+		this.lifecycleReconcilePending = false;
 		this.stopped = false;
 	}
 
@@ -156,35 +159,43 @@ export class Guard {
 	}
 
 	async bootstrap() {
-		// Re-bootstrap is full: drop all prior watch state (server does not
-		// resume subscriptions after reconnect).
+		// Re-bootstrap is full: drop all prior watch state and subscription
+		// sockets (the server does not resume subscriptions after reconnect).
+		this.socket.clearSubscriptions?.();
 		this.panes.clear();
 		this.dedupe = new Dedupe();
 		this.rateLimiter = new RateLimiter();
-
 		this.connected = false;
-		const snapshot = await this.socket.request("session.snapshot", {});
 
-		// Global lifecycle: new panes, closing panes (post-mortem), exits.
-		await this.socket.subscribe(
-			[
-				{ type: "pane.created" },
-				{ type: "pane.closed" },
-				{ type: "pane.exited" },
-			],
-			(msg) => this.onLifecycle(msg),
-		);
+		try {
+			const snapshot = await this.socket.request("session.snapshot", {});
 
-		const panes = extractPanes(snapshot);
-		// Subscribe-first/reconcile is async per pane; never serialize the whole
-		// bootstrap on one slow pane.
-		const watched = await Promise.allSettled(
-			panes.map((pane) => this.watchPane(pane)),
-		);
-		const failed = watched.find((result) => result.status === "rejected");
-		if (failed) throw failed.reason;
-		this.connected = true;
-		this.scheduleRender();
+			// Global lifecycle: new panes, closing panes (post-mortem), exits.
+			await this.socket.subscribe(
+				[
+					{ type: "pane.created" },
+					{ type: "pane.closed" },
+					{ type: "pane.exited" },
+				],
+				(msg) => this.onLifecycle(msg),
+			);
+
+			const panes = extractPanes(snapshot);
+			// Subscribe-first/reconcile is async per pane; never serialize the whole
+			// bootstrap on one slow pane.
+			const watched = await Promise.allSettled(
+				panes.map((pane) => this.watchPane(pane)),
+			);
+			const failed = watched.find((result) => result.status === "rejected");
+			if (failed) throw failed.reason;
+			this.connected = true;
+			this.scheduleRender();
+		} catch (error) {
+			this.socket.clearSubscriptions?.();
+			this.panes.clear();
+			this.connected = false;
+			throw error;
+		}
 	}
 
 	scheduleBootstrapRetry(error) {
@@ -207,6 +218,8 @@ export class Guard {
 		for (const t of this.timers) clearInterval(t);
 		if (this.renderTimer) clearTimeout(this.renderTimer);
 		if (this.bootstrapRetryTimer) clearTimeout(this.bootstrapRetryTimer);
+		if (this.lifecycleReconcileTimer)
+			clearTimeout(this.lifecycleReconcileTimer);
 		this.socket.close?.();
 	}
 
@@ -243,6 +256,7 @@ export class Guard {
 			lastSweep: 0,
 			sweeping: false,
 			projectPattern: null,
+			subscriptionIds: [],
 			onEvent: (msg) => this.onPush(paneId, msg),
 		};
 		this.panes.set(paneId, entry);
@@ -252,7 +266,7 @@ export class Guard {
 		const combined = buildCombinedPattern(this.config.rules);
 		if (combined) {
 			try {
-				await this.socket.subscribe(
+				const subscription = await this.socket.subscribe(
 					[
 						{
 							type: "pane.output_matched",
@@ -265,9 +279,13 @@ export class Guard {
 					],
 					entry.onEvent,
 				);
+				entry.subscriptionIds.push(subscription.subscriptionId);
 				entry.subscribedAt = this.now();
 			} catch (err) {
 				this.logSystem("subscribe-error", `${paneId}: ${err.message}`);
+				this.unwatchPane(paneId);
+				this.scheduleRender();
+				throw err;
 			}
 		}
 
@@ -275,7 +293,13 @@ export class Guard {
 		// real shell interrupt is classified correctly. Then subscribe any
 		// project-added patterns before taking the shared baseline.
 		await this.refreshPaneInfo(entry);
-		await this.ensureProjectSubscription(entry);
+		try {
+			await this.ensureProjectSubscription(entry);
+		} catch (error) {
+			this.logSystem("subscribe-error", `${paneId}: ${error.message}`);
+			this.unwatchPane(paneId);
+			throw error;
+		}
 
 		// 2) THEN reconcile: baseline read. Content-based replay suppression
 		//    compares push events against this set.
@@ -292,6 +316,13 @@ export class Guard {
 		this.scheduleRender();
 	}
 
+	unwatchPane(paneId) {
+		const entry = this.panes.get(paneId);
+		this.panes.delete(paneId);
+		for (const subscriptionId of entry?.subscriptionIds ?? [])
+			this.socket.unsubscribe?.(subscriptionId);
+	}
+
 	async ensureProjectSubscription(entry) {
 		const basePatterns = new Set(
 			this.config.rules.map((rule) => `${rule.match}:${rule.pattern}`),
@@ -301,7 +332,7 @@ export class Guard {
 		);
 		const pattern = buildCombinedPattern(projectRules);
 		if (!pattern || pattern === entry.projectPattern) return;
-		await this.socket.subscribe(
+		const subscription = await this.socket.subscribe(
 			[
 				{
 					type: "pane.output_matched",
@@ -314,6 +345,7 @@ export class Guard {
 			],
 			entry.onEvent,
 		);
+		entry.subscriptionIds.push(subscription.subscriptionId);
 		entry.projectPattern = pattern;
 	}
 
@@ -395,10 +427,9 @@ export class Guard {
 
 	onLifecycle(msg) {
 		const payload = eventPayload(msg);
-		const type = payload?.type ?? msg?.type ?? "";
+		const type = String(payload?.type ?? msg?.type ?? "").replaceAll("_", ".");
 		if (type === "pane.created") {
-			const pane = payload?.pane ?? payload;
-			this.watchPane(pane).catch(() => {});
+			this.scheduleLifecycleReconcile();
 			return;
 		}
 		if (type === "pane.closed" || type === "pane.exited") {
@@ -409,10 +440,49 @@ export class Guard {
 		}
 	}
 
+	scheduleLifecycleReconcile(delayMs = 50) {
+		this.lifecycleReconcilePending = true;
+		if (
+			this.stopped ||
+			this.lifecycleReconcileTimer ||
+			this.lifecycleReconcileRunning
+		)
+			return;
+		this.lifecycleReconcileTimer = setTimeout(() => {
+			this.lifecycleReconcileTimer = null;
+			this.reconcileLivePanes().catch(() => {});
+		}, delayMs);
+		this.lifecycleReconcileTimer.unref?.();
+	}
+
+	async reconcileLivePanes() {
+		if (this.lifecycleReconcileRunning || this.stopped) return;
+		this.lifecycleReconcileRunning = true;
+		this.lifecycleReconcilePending = false;
+		let retry = false;
+		try {
+			const snapshot = await this.socket.request("session.snapshot", {});
+			const unwatched = extractPanes(snapshot).filter(
+				(pane) => !this.panes.has(pane?.pane_id),
+			);
+			const results = await Promise.allSettled(
+				unwatched.map((pane) => this.watchPane(pane)),
+			);
+			retry = results.some((result) => result.status === "rejected");
+		} catch (error) {
+			retry = true;
+			this.logSystem("lifecycle-reconcile-error", error.message);
+		} finally {
+			this.lifecycleReconcileRunning = false;
+			if (!this.stopped && (retry || this.lifecycleReconcilePending))
+				this.scheduleLifecycleReconcile(retry ? 1_000 : 50);
+		}
+	}
+
 	/** Final read of a dying pane: split-run-close attacks get audited. */
 	async postMortem(paneId) {
 		const entry = this.panes.get(paneId);
-		this.panes.delete(paneId);
+		this.unwatchPane(paneId);
 		this.dedupe.clearPane(paneId);
 		this.rateLimiter.clearPane(paneId);
 		try {

@@ -18,10 +18,14 @@ class FakeSocket extends EventEmitter {
 		super();
 		this.baseline = baseline;
 		this.paneName = paneName;
+		this.panes = [{ pane_id: "p1", workspace_id: "w1", cwd: "/tmp" }];
 		this.calls = [];
+		this.lifecycleCallback = null;
 		this.outputCallback = null;
 		this.resetCount = 0;
 		this.snapshotCount = 0;
+		this.clearCount = 0;
+		this.unsubscribed = [];
 	}
 
 	async request(method, params = {}) {
@@ -30,9 +34,7 @@ class FakeSocket extends EventEmitter {
 			this.snapshotCount += 1;
 			return {
 				type: "session_snapshot",
-				snapshot: {
-					panes: [{ pane_id: "p1", workspace_id: "w1", cwd: "/tmp" }],
-				},
+				snapshot: { panes: this.panes },
 			};
 		}
 		if (method === "pane.process_info") {
@@ -53,6 +55,9 @@ class FakeSocket extends EventEmitter {
 
 	async subscribe(subscriptions, callback) {
 		this.calls.push({ method: "events.subscribe", params: { subscriptions } });
+		if (subscriptions[0]?.type === "pane.created") {
+			this.lifecycleCallback = callback;
+		}
 		if (subscriptions[0]?.type === "pane.output_matched") {
 			this.outputCallback = callback;
 			// Herdr replays matching scrollback immediately around the ack.
@@ -70,6 +75,14 @@ class FakeSocket extends EventEmitter {
 
 	async resetConnection() {
 		this.resetCount += 1;
+	}
+
+	clearSubscriptions() {
+		this.clearCount += 1;
+	}
+
+	unsubscribe(subscriptionId) {
+		this.unsubscribed.push(subscriptionId);
 	}
 
 	close() {}
@@ -122,6 +135,107 @@ test("bootstrap unwraps snapshot and suppresses replay queued before reconciliat
 		entries.some((entry) => entry.rule_id === "danger"),
 		false,
 	);
+});
+
+test("live underscore lifecycle events add newly created panes", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard } = makeGuard(socket);
+	await guard.bootstrap();
+	socket.panes.push({ pane_id: "p2", workspace_id: "w1", cwd: "/tmp" });
+
+	socket.lifecycleCallback({
+		event: "pane_created",
+		data: {
+			pane: { pane_id: "p2", workspace_id: "w1", cwd: "/tmp" },
+		},
+	});
+	await new Promise((resolve) => setTimeout(resolve, 80));
+
+	assert.equal(guard.panes.has("p2"), true);
+});
+
+test("replayed lifecycle events ignore panes absent from the live snapshot", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard } = makeGuard(socket);
+	await guard.bootstrap();
+
+	socket.lifecycleCallback({
+		event: "pane_created",
+		data: {
+			pane: { pane_id: "p2", workspace_id: "w1", cwd: "/tmp" },
+		},
+	});
+	await new Promise((resolve) => setTimeout(resolve, 80));
+
+	assert.equal(guard.panes.has("p2"), false);
+});
+
+test("lifecycle replay bursts coalesce into one live snapshot", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard } = makeGuard(socket);
+	await guard.bootstrap();
+	const snapshotsBefore = socket.snapshotCount;
+
+	for (let index = 0; index < 20; index++) {
+		socket.lifecycleCallback({
+			event: "pane_created",
+			data: {
+				pane: { pane_id: `stale-${index}`, workspace_id: "w1" },
+			},
+		});
+	}
+	await new Promise((resolve) => setTimeout(resolve, 80));
+
+	assert.equal(socket.snapshotCount, snapshotsBefore + 1);
+});
+
+test("failed subscriptions do not leave stale panes counted", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const subscribe = socket.subscribe.bind(socket);
+	socket.subscribe = async (subscriptions, callback) => {
+		if (subscriptions[0]?.pane_id === "p2") throw new Error("socket closed");
+		return subscribe(subscriptions, callback);
+	};
+	const { guard } = makeGuard(socket);
+	await guard.bootstrap();
+
+	await assert.rejects(
+		guard.watchPane({ pane_id: "p2", workspace_id: "w1", cwd: "/tmp" }),
+		/socket closed/,
+	);
+	assert.equal(guard.panes.has("p2"), false);
+});
+
+test("project subscription failure removes the base stream and pane", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard } = makeGuard(socket);
+	await guard.bootstrap();
+	guard.ensureProjectSubscription = async () => {
+		throw new Error("project subscription failed");
+	};
+
+	await assert.rejects(
+		guard.watchPane({ pane_id: "p2", workspace_id: "w1", cwd: "/tmp" }),
+		/project subscription failed/,
+	);
+	assert.equal(guard.panes.has("p2"), false);
+	assert.ok(socket.unsubscribed.includes("sub"));
+});
+
+test("partial bootstrap failure clears successful subscriptions and pane state", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const subscribe = socket.subscribe.bind(socket);
+	socket.subscribe = async (subscriptions, callback) => {
+		if (subscriptions[0]?.type === "pane.output_matched")
+			throw new Error("subscription failed");
+		return subscribe(subscriptions, callback);
+	};
+	const { guard } = makeGuard(socket);
+
+	await assert.rejects(guard.bootstrap(), /subscription failed/);
+	assert.equal(guard.connected, false);
+	assert.equal(guard.panes.size, 0);
+	assert.equal(socket.clearCount, 2);
 });
 
 test("repeated shell interrupts are never deduped and notifications coalesce", async () => {
