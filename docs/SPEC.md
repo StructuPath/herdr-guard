@@ -53,8 +53,10 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
    `pane.output_matched` subscription with a combined alternation regex and at
    most one replaceable project-policy subscription (`source:
    "recent_unwrapped"`, `lines: 5`, `strip_ansi: true`), THEN `pane.read` for a
-   baseline. Cwd, policy, and no-pattern transitions close the previous
-   project stream before installing a replacement. **Replay
+   baseline. Cwd and policy transitions acknowledge a replacement project
+   stream before atomically swapping ownership and closing the previous stream;
+   a rejected replacement is audited, retried, and leaves the old stream live.
+   No-pattern transitions intentionally close the prior project stream. **Replay
    suppression is content-based**: drop events whose matched lines are a
    subset of the post-subscribe read; the 500ms-arrival window is only a
    fallback heuristic. Never act on suppressed events — an `interrupt`
@@ -107,7 +109,9 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
    streams.
 10. **Fail-visible**: on initial server absence or a later socket drop, the
     dashboard reports disconnected state; reconnect uses backoff and then a
-    full bootstrap (snapshot → subscribe-first → reconcile).
+    full bootstrap (snapshot → subscribe-first → reconcile). Bootstrap work is
+    generation-gated: newer reconnect/config/retry attempts supersede older
+    attempts, and only the newest generation may own streams or publish ready.
 11. **Self-healing watchdog**: `[[events]]` hooks on `pane.closed` AND
     `pane.exited` — if the Guard pane died, the hook auto-reopens it via
     `plugin.pane.open` and notifies. A sibling-session check enumerates
@@ -117,7 +121,8 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
     advisory against agents with socket access. Upstream ask: socket ACL /
     read-only token, popup visibility in pane API.
 12. **Dashboard**: policy state (active/paused/disconnected), panes
-    watched, rules loaded, matches today, last N audit entries. ANSI
+    watched, rules loaded plus actual load-warning count, matches this watcher
+    run, last N audit entries. ANSI
     clear+reprint on event/resize. All event-derived strings stripped of
     C0/C1/OSC/U+2028/U+2029 before rendering — and the same sanitization
     applies to audit-log writes.
@@ -179,8 +184,13 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
 
 `pause` / `resume` flip `enforcement` (watcher mtime-polls, 2s). Every
 enforcement flip, config reload, and rule-set change is audit-logged
-(before/after counts) AND fires `notification.show`. `pause` takes an
-optional TTL (default 15min) after which enforcement auto-resumes.
+(before/after counts) AND fires `notification.show`. Watcher reloads emit
+`config-change-detected` before transport reset, then
+`config-change-applied` after the winning bootstrap is ready or
+`config-change-failed` while retaining a pending retry. `reset-rules` records
+bounded old/new rule counts and requests a notification after reseeding.
+`pause` takes an optional TTL (default 15min) after which enforcement
+auto-resumes.
 
 ### Audit log
 

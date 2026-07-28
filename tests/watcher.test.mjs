@@ -6,6 +6,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { Guard } from "../src/watcher.mjs";
 import { compileRule, scanText } from "../src/policy.mjs";
+import { renderDashboard } from "../src/render.mjs";
 
 const interruptRule = compileRule({
 	id: "danger",
@@ -35,6 +36,8 @@ class FakeSocket extends EventEmitter {
 		this.clearCount = 0;
 		this.unsubscribed = [];
 		this.nextSubscriptionId = 1;
+		this.activeSubscriptions = new Map();
+		this.connected = true;
 	}
 
 	async request(method, params = {}) {
@@ -83,22 +86,28 @@ class FakeSocket extends EventEmitter {
 				},
 			});
 		}
+		const subscriptionId = `sub-${this.nextSubscriptionId++}`;
+		this.activeSubscriptions.set(subscriptionId, subscriptions);
 		return {
-			subscriptionId: `sub-${this.nextSubscriptionId++}`,
+			subscriptionId,
 			ack: { type: "subscription_ack" },
 		};
 	}
 
 	async resetConnection() {
 		this.resetCount += 1;
+		this.connected = true;
 	}
 
 	clearSubscriptions() {
 		this.clearCount += 1;
+		for (const subscriptionId of this.activeSubscriptions.keys())
+			this.unsubscribe(subscriptionId);
 	}
 
 	unsubscribe(subscriptionId) {
 		this.unsubscribed.push(subscriptionId);
+		this.activeSubscriptions.delete(subscriptionId);
 	}
 
 	close() {}
@@ -106,7 +115,13 @@ class FakeSocket extends EventEmitter {
 
 function makeGuard(
 	socket,
-	{ now = () => 1_000, paneName = "zsh", onDisconnect = null } = {},
+	{
+		now = () => 1_000,
+		paneName = "zsh",
+		onDisconnect = null,
+		bootstrapRetryMs = 1_000,
+		projectSubscriptionRetryMs = 1_000,
+	} = {},
 ) {
 	socket.paneName = paneName;
 	const entries = [];
@@ -126,6 +141,8 @@ function makeGuard(
 		auditLog: { write: (entry) => entries.push(entry), tail: () => entries },
 		now,
 		onDisconnect,
+		bootstrapRetryMs,
+		projectSubscriptionRetryMs,
 	});
 	guard.config = {
 		enforcement: "active",
@@ -151,6 +168,66 @@ test("bootstrap unwraps snapshot and suppresses replay queued before reconciliat
 		entries.some((entry) => entry.rule_id === "danger"),
 		false,
 	);
+});
+
+test("superseded bootstrap cannot install streams or publish readiness", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	let releaseOlderSnapshot;
+	let markOlderStarted;
+	const olderStarted = new Promise((resolve) => {
+		markOlderStarted = resolve;
+	});
+	const request = socket.request.bind(socket);
+	let snapshotAttempt = 0;
+	socket.request = async (method, params) => {
+		if (method === "session.snapshot" && snapshotAttempt++ === 0) {
+			markOlderStarted();
+			return new Promise((resolve) => {
+				releaseOlderSnapshot = () =>
+					resolve({
+						type: "session_snapshot",
+						snapshot: { panes: socket.panes },
+					});
+			});
+		}
+		return request(method, params);
+	};
+	const { guard } = makeGuard(socket);
+
+	const older = guard.bootstrap();
+	await olderStarted;
+	await guard.bootstrap();
+	assert.equal(guard.connected, true);
+	releaseOlderSnapshot();
+	await assert.rejects(older, /bootstrap superseded/);
+
+	const active = [...socket.activeSubscriptions.values()];
+	assert.equal(
+		active.filter((subscriptions) => subscriptions[0]?.type === "pane.created")
+			.length,
+		1,
+	);
+	assert.equal(
+		active.filter(
+			(subscriptions) => subscriptions[0]?.type === "pane.output_matched",
+		).length,
+		1,
+	);
+	assert.equal(guard.panes.size, 1);
+	assert.equal(guard.connected, true);
+});
+
+test("a new bootstrap cancels a stale scheduled retry", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard } = makeGuard(socket, { bootstrapRetryMs: 60_000 });
+	guard.scheduleBootstrapRetry(new Error("temporary failure"));
+	assert.ok(guard.bootstrapRetryTimer);
+
+	const bootstrap = guard.bootstrap();
+	assert.equal(guard.bootstrapRetryTimer, null);
+	await bootstrap;
+	assert.equal(guard.connected, true);
+	guard.stop();
 });
 
 test("live underscore lifecycle events add newly created panes", async () => {
@@ -299,6 +376,73 @@ test("project subscription ownership replaces policy and cwd streams, including 
 	assert.equal(socket.unsubscribed.includes(baseSubscriptionId), false);
 });
 
+test("rejected project replacement retains the old stream, audits, and retries", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "guard-project-retry-"));
+	const override = path.join(root, ".herdr-guard.json");
+	const writeOverride = (id, pattern, offset) => {
+		fs.writeFileSync(
+			override,
+			JSON.stringify({
+				rules: [
+					{
+						id,
+						severity: "alert",
+						match: "substring",
+						pattern,
+						reason: id,
+					},
+				],
+			}),
+		);
+		const timestamp = new Date(Date.now() + offset);
+		fs.utimesSync(override, timestamp, timestamp);
+	};
+	writeOverride("project-alpha", "alpha", 0);
+	const socket = new FakeSocket({ baseline: "", paneCwd: root });
+	const subscribe = socket.subscribe.bind(socket);
+	let rejectBravo = false;
+	socket.subscribe = async (subscriptions, callback) => {
+		const pattern = subscriptions[0]?.match?.value ?? "";
+		if (rejectBravo && pattern.includes("bravo")) {
+			rejectBravo = false;
+			throw new Error("replacement rejected");
+		}
+		return subscribe(subscriptions, callback);
+	};
+	const { guard, entries } = makeGuard(socket, {
+		projectSubscriptionRetryMs: 5,
+	});
+	guard.overrideDir = () => override;
+	await guard.bootstrap();
+	const entry = guard.panes.get("p1");
+	const originalId = entry.projectSubscriptionId;
+	assert.ok(socket.activeSubscriptions.has(originalId));
+
+	writeOverride("project-bravo", "bravo", 2_000);
+	rejectBravo = true;
+	await assert.rejects(
+		guard.ensureProjectSubscription(entry),
+		/replacement rejected/,
+	);
+	assert.equal(entry.projectSubscriptionId, originalId);
+	assert.match(entry.projectPattern, /alpha/);
+	assert.ok(socket.activeSubscriptions.has(originalId));
+	assert.equal(socket.unsubscribed.includes(originalId), false);
+	assert.ok(
+		entries.some(
+			(item) =>
+				item.action_taken === "subscribe-error" &&
+				item.note.includes("retained after replacement failed"),
+		),
+	);
+
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.notEqual(entry.projectSubscriptionId, originalId);
+	assert.match(entry.projectPattern, /bravo/);
+	assert.ok(socket.unsubscribed.includes(originalId));
+	assert.equal(entry.projectSubscriptionRetryTimer, null);
+});
+
 test("partial bootstrap failure clears successful subscriptions and pane state", async () => {
 	const socket = new FakeSocket({ baseline: "" });
 	const subscribe = socket.subscribe.bind(socket);
@@ -431,6 +575,95 @@ test("valid config changes reset the socket and fully bootstrap subscriptions", 
 	assert.equal(guard.connected, true);
 });
 
+test("failed config bootstrap audits failure then eventual retry application", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	let changed = true;
+	const { guard, entries } = makeGuard(socket, { bootstrapRetryMs: 5 });
+	guard.configStore.reloadIfChanged = () =>
+		changed
+			? ((changed = false),
+				{
+					changed: true,
+					config: {
+						enforcement: "active",
+						paused_until: null,
+						rules: [interruptRule],
+					},
+					warnings: ["rule rejected"],
+				})
+			: { changed: false };
+	await guard.bootstrap();
+	const subscribe = socket.subscribe.bind(socket);
+	let rejectLifecycle = true;
+	socket.subscribe = async (subscriptions, callback) => {
+		if (rejectLifecycle && subscriptions[0]?.type === "pane.created") {
+			rejectLifecycle = false;
+			throw new Error("lifecycle subscribe rejected");
+		}
+		return subscribe(subscriptions, callback);
+	};
+
+	await guard.configTick();
+	assert.equal(guard.connected, false);
+	assert.ok(guard.bootstrapRetryTimer);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.equal(guard.connected, true);
+	assert.equal(guard.pendingConfigChange, null);
+	assert.deepEqual(
+		entries
+			.filter((entry) => entry.action_taken?.startsWith("config-change-"))
+			.map((entry) => entry.action_taken),
+		[
+			"config-change-detected",
+			"config-change-failed",
+			"config-change-applied",
+		],
+	);
+	assert.equal(guard.renderState().loadWarnings, 1);
+	const notificationBodies = socket.calls
+		.filter((call) => call.method === "notification.show")
+		.map((call) => call.params.body);
+	assert.ok(notificationBodies.some((body) => body.includes("detected")));
+	assert.ok(notificationBodies.some((body) => body.includes("failed")));
+	assert.ok(notificationBodies.some((body) => body.includes("applied")));
+	guard.stop();
+});
+
+test("invalid config changes emit detected and failed evidence", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard, entries } = makeGuard(socket);
+	guard.configStore.reloadIfChanged = () => ({
+		changed: true,
+		error: "parse failed",
+	});
+
+	await guard.configTick();
+	assert.deepEqual(
+		entries.map((entry) => entry.action_taken),
+		["config-change-detected", "config-change-failed"],
+	);
+	assert.equal(guard.connected, false);
+	assert.equal(guard.config.rules.length, 1);
+});
+
+test("dashboard reports load warnings and matches for this run only", () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const { guard } = makeGuard(socket);
+	guard.loadWarningCount = 2;
+	guard.bumpMatches();
+	guard.bumpMatches();
+	const state = guard.renderState();
+	assert.equal(state.loadWarnings, 2);
+	assert.equal(state.matchesThisRun, 2);
+	const dashboard = renderDashboard(state);
+	assert.match(dashboard, /\(\+2 load warnings\)/);
+	assert.match(dashboard, /matches this run:/);
+	assert.doesNotMatch(dashboard, /matches today:/);
+
+	const restarted = makeGuard(new FakeSocket({ baseline: "" })).guard;
+	assert.equal(restarted.renderState().matchesThisRun, 0);
+});
+
 test("lower-severity flood traffic never suppresses an interrupt", async () => {
 	const socket = new FakeSocket({ baseline: "" });
 	const { guard } = makeGuard(socket, { now: () => 100_000 });
@@ -452,14 +685,14 @@ test("lower-severity flood traffic never suppresses an interrupt", async () => {
 test("failed bootstrap retries while the socket remains connected", async () => {
 	const socket = new FakeSocket();
 	socket.connected = true;
-	const { guard } = makeGuard(socket);
+	const { guard } = makeGuard(socket, { bootstrapRetryMs: 5 });
 	let attempts = 0;
 	guard.bootstrap = async () => {
 		attempts += 1;
 		guard.connected = true;
 	};
 	guard.scheduleBootstrapRetry(new Error("temporary bootstrap failure"));
-	await new Promise((resolve) => setTimeout(resolve, 1_050));
+	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.equal(attempts, 1);
 	assert.equal(guard.connected, true);
 	guard.stop();
