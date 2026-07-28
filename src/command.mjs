@@ -44,6 +44,14 @@ function seed() {
 	s.seedIfMissing();
 	return s;
 }
+function configuredRuleCount(file) {
+	try {
+		const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+		return Array.isArray(parsed?.rules) ? parsed.rules.length : null;
+	} catch {
+		return null;
+	}
+}
 function parseDurationMs(value) {
 	if (!value) return 15 * 60 * 1000;
 	const match = /^(\d+)([smh]?)$/.exec(value);
@@ -218,13 +226,35 @@ if (action === "pause" || action === "resume") {
 	process.exit(0);
 }
 if (action === "reset-rules") {
+	const previousRuleCount = configuredRuleCount(s.file);
+	let backupCreated = false;
 	if (fs.existsSync(s.file)) {
 		const backup = `${s.file}.backup-${Date.now()}`;
 		fs.copyFileSync(s.file, backup);
 		fs.chmodSync(backup, 0o600);
+		backupCreated = true;
 	}
 	fs.rmSync(s.file, { force: true });
 	s.seedIfMissing();
+	const nextRuleCount = configuredRuleCount(s.file);
+	const count = (value) => (value === null ? "unknown" : String(value));
+	const note =
+		`rules ${count(previousRuleCount)} -> ${count(nextRuleCount)}; ` +
+		`backup ${backupCreated ? "created" : "not-needed"}`;
+	ensureState();
+	new AuditLog(stateDir).write({
+		ts: Date.now(),
+		action_taken: "rules-reset",
+		source: "command",
+		note,
+	});
+	await run([
+		"notification",
+		"show",
+		"herdr-guard",
+		"--body",
+		`guard rules reset: ${note}`,
+	]);
 	console.log(`rules reset in ${s.file}`);
 	process.exit(0);
 }

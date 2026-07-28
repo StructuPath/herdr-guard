@@ -4,6 +4,8 @@ Cross-agent command policy for [Herdr](https://herdr.dev): watch every pane,
 audit risky commands, notify you, and best-effort interrupt dangerous shell
 input.
 
+Current runtime and manifest release: **0.1.1**.
+
 **Docs:** the [StructuPath Herdr Plugins wiki](https://github.com/StructuPath/herdr-browser/wiki)
 is the practical guide to this plugin and its three siblings (Browser, Swarm,
 Conductor).
@@ -15,13 +17,16 @@ executed._
 
 ## Coverage (honest contract)
 
-| Pane | Guard sees | Interrupt guarantee |
+| Pane | Guard sees | Interrupt behavior |
 | --- | --- | --- |
-| Interactive zsh/bash | Typed and unsubmitted input | Strong pre-execution cancel via `ctrl+c` |
-| Raw/no-echo shell | Nothing typed | None; `stty -echo` is alerted |
-| Pi/Claude/Codex TUIs | Only rendered terminal text | Incidental; harness hooks remain authoritative |
-| Logs/builds | Printed output | Best-effort while process is running |
+| Shell (zsh/bash) | Typed input | Best-effort request; prevention unknown |
+| Raw/no-echo shell | Nothing typed | No request; `stty -echo` alerts |
+| Agent TUIs | Rendered text | Usually none; harness hooks are authoritative |
+| Logs/builds | Printed output | None unless classified as a shell |
 | Herdr popups | Nothing in v1 | Blind spot |
+
+For a shell match, Guard records whether Herdr accepted the request. Acceptance
+is not proof that the process received Ctrl+C or that execution changed.
 
 This is a text policy layer, not intent analysis. Shell obfuscation, detached
 nested multiplexers, popup panes, and a stopped/disabled guard are documented
@@ -80,7 +85,9 @@ manifest and source before installing. The audit log contains sensitive
 metadata even after token redaction; protect and rotate it appropriately.
 
 The guard is advisory against a process that can disable the plugin, kill its
-pane, stop Herdr, or use an unobserved popup/nested session. The socket API has
+pane, stop Herdr, or use an unobserved popup/nested session. An accepted
+`pane.send_keys` request does not prove that a process received Ctrl+C or that
+execution changed. The socket API has
 no plugin-specific read-only ACL in the current Herdr release. Events are
 reconciled with baseline suppression to avoid replayed scrollback triggering a
 fresh interrupt, and interrupt matches are intentionally never deduplicated.

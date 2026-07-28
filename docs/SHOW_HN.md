@@ -17,10 +17,11 @@ or print a command I would want to notice before it ran?
 
 herdr-guard is a Herdr plugin that applies one text policy across those panes.
 Rules can audit a match, send an alert, or attempt to interrupt an interactive
-shell by sending Ctrl+C to the pane that produced the event. The default policy
-covers destructive filesystem and infrastructure commands, force pushes,
-secret-file reads, publishing, exfiltration indicators, and common attempts to
-hide execution.
+shell by requesting Ctrl+C in the pane that produced the event. Guard records
+whether Herdr accepted that request, but prevention remains unknown. The
+default policy covers destructive filesystem and infrastructure commands,
+force pushes, secret-file reads, publishing, exfiltration indicators, and
+common attempts to hide execution.
 
 The implementation is plain ESM Node.js 20 with no runtime dependencies. It
 connects to Herdr's NDJSON socket, takes a pane snapshot, subscribes to
@@ -49,11 +50,11 @@ You can try the tagged release without an account or service. It requires
 Herdr 0.7.5+, Node.js 20+, and macOS or Linux:
 
 ```sh
-herdr plugin install StructuPath/herdr-guard --ref v0.1.0
+herdr plugin install StructuPath/herdr-guard --ref v0.1.1
 ```
 
 The repository includes the policy, manifest, an honest coverage matrix, a
-reproducible demo, and 23 fake-socket/runtime regression tests. I would
+reproducible demo, and a fake-socket/runtime regression suite. I would
 especially value feedback on false-positive tradeoffs, useful default rules,
 and whether the next step should be shell pre-exec approval, small reporters
 for agent harnesses, or upstream Herdr capabilities such as popup visibility

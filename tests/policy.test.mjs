@@ -150,6 +150,50 @@ test("ConfigStore keeps last good config after invalid JSON or enforcement", () 
 	assert.match(invalid.error, /enforcement must be active\|paused/);
 });
 
+test("ConfigStore attempts each malformed file generation once and recovers", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-generations-"));
+	const defaults = path.join(dir, "defaults.json");
+	const file = path.join(dir, "rules.json");
+	fs.writeFileSync(defaults, JSON.stringify({ version: 1, rules: [rule()] }));
+	const store = new ConfigStore({ configDir: dir, defaultsPath: defaults });
+	const first = store.load().config;
+	assert.ok(first);
+
+	const writeGeneration = (contents, seconds) => {
+		fs.writeFileSync(file, contents);
+		fs.utimesSync(file, seconds, seconds);
+		assert.equal(fs.statSync(file).mtimeMs, seconds * 1000);
+	};
+
+	writeGeneration("{", 1_700_000_001);
+	const parseFailure = store.reloadIfChanged();
+	assert.equal(parseFailure.changed, true);
+	assert.equal(parseFailure.config, first);
+	assert.match(parseFailure.error, /parse failed/);
+	assert.deepEqual(store.reloadIfChanged(), { changed: false });
+
+	writeGeneration(
+		JSON.stringify({ enforcement: "disabled", rules: [rule()] }),
+		1_700_000_002,
+	);
+	const validationFailure = store.reloadIfChanged();
+	assert.equal(validationFailure.changed, true);
+	assert.equal(validationFailure.config, first);
+	assert.match(validationFailure.error, /enforcement must be active\|paused/);
+	assert.deepEqual(store.reloadIfChanged(), { changed: false });
+
+	writeGeneration(
+		JSON.stringify({ enforcement: "paused", rules: [rule()] }),
+		1_700_000_003,
+	);
+	const recovered = store.reloadIfChanged();
+	assert.equal(recovered.changed, true);
+	assert.equal(recovered.error, null);
+	assert.equal(recovered.config.enforcement, "paused");
+	assert.notEqual(recovered.config, first);
+	assert.deepEqual(store.reloadIfChanged(), { changed: false });
+});
+
 test("audit log enforces modes, partitions, rotates, and removes secrets/control bytes", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-audit-"));
 	const log = new AuditLog(dir, { maxBytes: 80, generations: 3 });
@@ -158,6 +202,10 @@ test("audit log enforces modes, partitions, rotates, and removes secrets/control
 		severity: "interrupt",
 		matched_text: `$ TOKEN=secret sk-abcdefghijk\x1b]8;;https://evil\x07${"x".repeat(300)}\x1b\\`,
 		pane_id: "p",
+		decision: "request-interrupt",
+		interrupt_request: "accepted",
+		prevention: "unknown",
+		future_string: "TOKEN=secret\x1b]0;hidden\x07",
 	});
 	for (let ts = 2; ts <= 8; ts++) {
 		log.write({
@@ -179,6 +227,10 @@ test("audit log enforces modes, partitions, rotates, and removes secrets/control
 	assert.doesNotMatch(interrupt, /secret|sk-abcdefghijk|https:\/\/evil|\x1b/);
 	const parsed = JSON.parse(interrupt.trim());
 	assert.ok(parsed.matched_text.length <= 200);
+	assert.equal(parsed.decision, "request-interrupt");
+	assert.equal(parsed.interrupt_request, "accepted");
+	assert.equal(parsed.prevention, "unknown");
+	assert.doesNotMatch(parsed.future_string, /secret|\x1b/);
 	assert.ok(fs.existsSync(path.join(dir, "audit.jsonl.1")));
 	assert.ok(log.tail(20).some((entry) => entry.severity === "interrupt"));
 	assert.ok(log.tail(20).some((entry) => entry.severity === "alert"));

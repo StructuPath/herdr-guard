@@ -1,4 +1,4 @@
-# herdr-guard — Spec (v1)
+# herdr-guard — Spec (v1, runtime 0.1.1)
 
 Cross-agent command policy layer for [Herdr](https://herdr.dev). Watches herdr
 panes for dangerous commands, then audits, alerts, or interrupts — from one
@@ -9,13 +9,13 @@ policy, regardless of which agent or shell is running in the pane.
 Coverage depends on pane type. This table is the product's contract — it
 belongs in the README verbatim:
 
-| Pane type | What the guard sees | `interrupt` guarantee |
+| Pane type | What the guard sees | `interrupt` behavior |
 | --- | --- | --- |
-| Interactive shell (zsh/bash, canonical echo) | Everything typed, **including unsubmitted input** (tty echo) | **Pre-execution cancel**: ctrl+c wipes the readline before Enter. Strong |
-| Shell in raw/no-echo mode (`stty -echo`, curses wrappers) | Nothing typed | None. `stty -echo` itself is an alert-class rule |
-| TUI agent (Pi, Claude Code, Codex) | Only what the TUI renders — permission prompts, expanded tool views. Tool-executed command strings are usually NOT echoed | Incidental only. Do not rely on it |
-| Plain process output (logs, builds) | Everything printed | Best-effort: only stops commands still running |
-| Popup panes | **Nothing** — popups have no pane id, no pane events, no pane API | None. Hard blind spot, documented |
+| Interactive shell (zsh/bash, canonical echo) | Everything typed, **including unsubmitted input** (tty echo) | Best-effort pre-execution Ctrl+C request; request acceptance is recorded and prevention remains unknown |
+| Shell in raw/no-echo mode (`stty -echo`, curses wrappers) | Nothing typed | No request. `stty -echo` itself is an alert-class rule |
+| TUI agent (Pi, Claude Code, Codex) | Only what the TUI renders — permission prompts, expanded tool views. Tool-executed command strings are usually NOT echoed | Usually no request. Do not rely on it |
+| Plain process output (logs, builds) | Everything printed | No request unless the pane is classified as a shell |
+| Popup panes | **Nothing** — popups have no pane id, no pane events, no pane API | No request. Hard blind spot, documented |
 
 The guard matches command **text**, not command **intent**. Semantic
 obfuscation (`base64 -d | sh`, `r''m`, `$x -rf`, python `shutil.rmtree`)
@@ -49,10 +49,14 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
 
 1. **Bootstrap**: `session.snapshot` → live panes (excluding own plugin
    panes by plugin id, never by process name).
-2. **Subscribe-first, reconcile-after** (per pane): open ONE
-   `pane.output_matched` subscription with a single combined alternation
-   regex (`source: "recent_unwrapped"`, `lines: 5` for interrupt rules,
-   `strip_ansi: true`), THEN `pane.read` for a baseline. **Replay
+2. **Subscribe-first, reconcile-after** (per pane): open one base
+   `pane.output_matched` subscription with a combined alternation regex and at
+   most one replaceable project-policy subscription (`source:
+   "recent_unwrapped"`, `lines: 5`, `strip_ansi: true`), THEN `pane.read` for a
+   baseline. Cwd and policy transitions acknowledge a replacement project
+   stream before atomically swapping ownership and closing the previous stream;
+   a rejected replacement is audited, retried, and leaves the old stream live.
+   No-pattern transitions intentionally close the prior project stream. **Replay
    suppression is content-based**: drop events whose matched lines are a
    subset of the post-subscribe read; the 500ms-arrival window is only a
    fallback heuristic. Never act on suppressed events — an `interrupt`
@@ -66,7 +70,7 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
 4. **On match event**: herdr-side matching is edge-triggered, so the guard
    re-scans the event's `read.text` locally against all rules. Dedupe is:
    time-bounded (suppress identical repeats only within ~2s), LRU-capped
-   (256 entries/pane), keyed on (pane, line, action_taken) — and
+   (256 entries/pane), keyed on pane, line, and rule id — and
    **interrupt-class rules are never deduped across interrupt events** (a
    rule severe enough to ctrl+c once is severe enough to ctrl+c twice;
    this kills the pre-seeding attack).
@@ -81,14 +85,16 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
    partitioned files — `audit.interrupt.jsonl` rotates separately from
    `audit.jsonl` (10MB × 3 generations each, 0600 preserved).
 7. **Decide and act** (highest matching severity wins):
-   - all tiers: audit-log `{ts, pane_id, workspace, rule_id, matched_text,
-     process_argv, cwd, pane_type, action_taken}`
-   - `alert` / `interrupt`: `notification.show` (best-effort; the audit
-     entry is the reliable record)
-   - `interrupt`: `pane.send_keys` ctrl+c **to the event's own pane_id
-     only**. Pinned invariant: pane_id comes from the event, never from
-     matched text or config. TOCTOU acknowledged: the ctrl+c lands on
-     whatever is in the pane now.
+   - all match tiers record `decision`, `interrupt_request`, and
+     `prevention: "unknown"` alongside pane/rule/process context;
+   - `interrupt_request` is exactly `accepted`, `failed`, or
+     `not-requested`; accepted means only that the Herdr RPC succeeded;
+   - `alert` / `interrupt`: request `notification.show` (best-effort; the
+     audit entry is the reliable local record);
+   - shell `interrupt`: request `pane.send_keys` Ctrl+C **to the event's own
+     pane_id only**. Pinned invariant: pane_id comes from the event, never
+     from matched text or config. TOCTOU acknowledged: the request targets
+     whatever is in the pane then, and Guard cannot observe prevention.
 8. **`prompt_only` matching**: rules with `prompt_only: true` (DEFAULT ON
    for interrupt rules) only fire when the matched line looks like a
    prompt line (leading `❯`/`$`/`%`/`╰─` glyph). Prevents ctrl+c-ing vim,
@@ -98,10 +104,14 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
    audit.
 9. **Enrichment**: `pane.process_info` for foreground argv/cwd; classify
    pane_type from process name + terminal title. Override cache is keyed
-   by pane cwd and **invalidated on cwd change**, not just mtime.
-10. **Fail-visible**: on socket drop, dashboard shows
-    `DISCONNECTED — NOT ENFORCING` + notification; reconnect with backoff,
-    then full re-bootstrap (snapshot → subscribe-first → reconcile).
+   by pane cwd and **invalidated on cwd change**, not just mtime. Project
+   policy changes replace their owned subscription instead of accumulating
+   streams.
+10. **Fail-visible**: on initial server absence or a later socket drop, the
+    dashboard reports disconnected state; reconnect uses backoff and then a
+    full bootstrap (snapshot → subscribe-first → reconcile). Bootstrap work is
+    generation-gated: newer reconnect/config/retry attempts supersede older
+    attempts, and only the newest generation may own streams or publish ready.
 11. **Self-healing watchdog**: `[[events]]` hooks on `pane.closed` AND
     `pane.exited` — if the Guard pane died, the hook auto-reopens it via
     `plugin.pane.open` and notifies. A sibling-session check enumerates
@@ -111,7 +121,8 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
     advisory against agents with socket access. Upstream ask: socket ACL /
     read-only token, popup visibility in pane API.
 12. **Dashboard**: policy state (active/paused/disconnected), panes
-    watched, rules loaded, matches today, last N audit entries. ANSI
+    watched, rules loaded plus actual load-warning count, matches this watcher
+    run, last N audit entries. ANSI
     clear+reprint on event/resize. All event-derived strings stripped of
     C0/C1/OSC/U+2028/U+2029 before rendering — and the same sanitization
     applies to audit-log writes.
@@ -173,16 +184,23 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
 
 `pause` / `resume` flip `enforcement` (watcher mtime-polls, 2s). Every
 enforcement flip, config reload, and rule-set change is audit-logged
-(before/after counts) AND fires `notification.show`. `pause` takes an
-optional TTL (default 15min) after which enforcement auto-resumes.
+(before/after counts) AND fires `notification.show`. Watcher reloads emit
+`config-change-detected` before transport reset, then
+`config-change-applied` after the winning bootstrap is ready or
+`config-change-failed` while retaining a pending retry. `reset-rules` records
+bounded old/new rule counts and requests a notification after reseeding.
+`pause` takes an optional TTL (default 15min) after which enforcement
+auto-resumes.
 
 ### Audit log
 
 `$HERDR_PLUGIN_STATE_DIR/audit.jsonl` + `audit.interrupt.jsonl`, `0600`,
 10MB × 3 generations, partitioned so floods can't evict interrupt history.
-Before writing: `matched_text` truncated to 200 chars, redacted
-(`KEY=VALUE`, bearer/`sk-`/`ghp_` token shapes), sanitized
-(C0/C1/OSC/U+2028/U+2029). The audit log is sensitive data; README says so.
+Before writing, every string field is truncated to 200 chars, redacted
+(`KEY=VALUE`, bearer/`sk-`/`ghp_` token shapes), and sanitized
+(C0/C1/OSC/U+2028/U+2029). Match records separate the policy decision from the
+interrupt request result and always report `prevention: "unknown"`. The audit
+log is sensitive data; README says so.
 
 ### Manifest surface
 
@@ -210,7 +228,8 @@ Before writing: `matched_text` truncated to 200 chars, redacted
   is the mitigation).
 - Nested-mux detached execution (`tmux new-window -d`, `screen -dm`,
   nohup+disown) — launcher line may alert; execution is invisible.
-- Interrupt TOCTOU: ctrl+c lands on whatever is currently foreground.
+- Interrupt TOCTOU: a Ctrl+C request targets whatever is currently foreground;
+  accepted delivery and prevention are not observable.
 - Scrollback eviction can beat the sweep; push path is the primary record.
 - Smoke-test matrix required before publish: user scrolled up in
   scrollback, terminal resize, OSC8/DCS/APC/bracketed-paste ANSI
@@ -225,11 +244,11 @@ Before writing: `matched_text` truncated to 200 chars, redacted
 - `herdr-socket.mjs` against a fake NDJSON server: bootstrap,
   subscribe-first/reconcile, content-based replay suppression,
   edge-trigger local re-scan, post-mortem sweep, reconnect → re-bootstrap.
-- Manual smoke: `herdr plugin link .` → Guard pane auto-opens on restart →
-  type (don't submit) `rm -rf /` in a shell pane → line cancelled, audit
-  entry, notification → repeat immediately → cancelled AGAIN (no dedupe) →
-  `guard test` shows the same match → close Guard pane → watchdog reopens
-  it with a notification.
+- Safe manual smoke: confirm Herdr 0.7.5, perform two sequential read-only
+  `session.snapshot` RPCs, run the policy demo without executing its input,
+  and inspect that an interrupt dry-run says it would request Ctrl+C while
+  prevention remains unknown. Live key delivery is optional and must not use a
+  destructive command.
 
 ## Publish
 

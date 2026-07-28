@@ -333,6 +333,12 @@ export class ConfigStore {
 				warnings: [],
 			};
 		}
+		let observedMtimeMs;
+		try {
+			observedMtimeMs = fs.statSync(this.file).mtimeMs;
+		} catch {
+			observedMtimeMs = undefined;
+		}
 		let rawText;
 		try {
 			rawText = fs.readFileSync(this.file, "utf8");
@@ -344,6 +350,9 @@ export class ConfigStore {
 				warnings: [],
 			};
 		}
+		// Track the generation we attempted, not only the last-good generation.
+		// An unchanged malformed file must not look new on every watcher poll.
+		if (observedMtimeMs !== undefined) this.lastMtimeMs = observedMtimeMs;
 		let raw;
 		try {
 			raw = JSON.parse(rawText);
@@ -365,11 +374,6 @@ export class ConfigStore {
 			};
 		}
 		this.lastGood = config;
-		try {
-			this.lastMtimeMs = fs.statSync(this.file).mtimeMs;
-		} catch {
-			this.lastMtimeMs = 0;
-		}
 		return { config, seeded, error: null, warnings: errors };
 	}
 
@@ -383,6 +387,9 @@ export class ConfigStore {
 		}
 		if (mtimeMs === this.lastMtimeMs) return { changed: false };
 		const result = this.load({ seedIfMissing: false });
+		// Preserve the generation that caused this reload even if the load failed
+		// or the file was replaced between the poll stat and the load attempt.
+		this.lastMtimeMs = mtimeMs;
 		return { changed: true, ...result };
 	}
 
@@ -517,7 +524,7 @@ export function mergeProjectOverride(
 
 // ---------------------------------------------------------------------------
 // Dedupe — time-bounded, LRU-capped, interrupt rules NEVER deduped
-// (the pre-seeding attack: cancel once, retype, hit Enter — must cancel again)
+// (the pre-seeding attack: request once, retype, hit Enter — must request again)
 // ---------------------------------------------------------------------------
 
 export class Dedupe {

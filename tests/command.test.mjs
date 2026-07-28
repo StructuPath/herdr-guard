@@ -135,6 +135,43 @@ test("pause refuses malformed config without modifying it and accepts TTL", () =
 	);
 });
 
+test("reset-rules audits bounded counts and requests a notification", () => {
+	const f = fixture();
+	fs.mkdirSync(f.configDir, { recursive: true });
+	const rules = path.join(f.configDir, "rules.json");
+	const custom = JSON.parse(
+		fs.readFileSync(path.join(root, "src", "rules-default.json"), "utf8"),
+	);
+	custom.rules = custom.rules.slice(0, 2);
+	fs.writeFileSync(rules, JSON.stringify(custom), { mode: 0o600 });
+
+	const result = runCommand(["reset-rules"], f.env);
+	assert.equal(result.status, 0, result.stderr);
+	const defaults = JSON.parse(
+		fs.readFileSync(path.join(root, "src", "rules-default.json"), "utf8"),
+	);
+	assert.equal(JSON.parse(fs.readFileSync(rules, "utf8")).rules.length, defaults.rules.length);
+	const backups = fs
+		.readdirSync(f.configDir)
+		.filter((name) => name.startsWith("rules.json.backup-"));
+	assert.equal(backups.length, 1);
+	const audit = fs
+		.readFileSync(path.join(f.stateDir, "audit.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map(JSON.parse);
+	assert.equal(audit.at(-1).action_taken, "rules-reset");
+	assert.match(audit.at(-1).note, new RegExp(`rules 2 -> ${defaults.rules.length}`));
+	assert.ok(
+		calls(f.log).some(
+			(args) =>
+				args[0] === "notification" &&
+				args.includes("herdr-guard") &&
+				args.some((arg) => arg.includes("guard rules reset")),
+		),
+	);
+});
+
 test("test action without text requests the declared popup pane", async () => {
 	const f = fixture();
 	const target = path.join(f.dir, "herdr.sock");

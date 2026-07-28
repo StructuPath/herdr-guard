@@ -37,7 +37,7 @@ function stateLine(state) {
 /**
  * state: {
  *   connected, enforcement, pausedUntil, now, panesWatched, rulesLoaded,
- *   rejectedRules, matchesToday, lastEntries[], version
+ *   loadWarnings, matchesThisRun, lastEntries[], version
  * }
  */
 export function renderDashboard(state, { width = 80, height = 24 } = {}) {
@@ -48,10 +48,10 @@ export function renderDashboard(state, { width = 80, height = 24 } = {}) {
 	lines.push(
 		` ${DIM}panes watched:${RESET} ${state.panesWatched}   ` +
 			`${DIM}rules:${RESET} ${state.rulesLoaded}` +
-			(state.rejectedRules
-				? paint(YELLOW, ` (+${state.rejectedRules} rejected)`)
+			(state.loadWarnings
+				? paint(YELLOW, ` (+${state.loadWarnings} load warnings)`)
 				: "") +
-			`   ${DIM}matches today:${RESET} ${state.matchesToday}`,
+			`   ${DIM}matches this run:${RESET} ${state.matchesThisRun}`,
 	);
 	lines.push("");
 	lines.push(` ${BOLD}recent activity${RESET}`);
