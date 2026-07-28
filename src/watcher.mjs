@@ -22,7 +22,7 @@ import {
 } from "./policy.mjs";
 import { renderDashboard } from "./render.mjs";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const REPLAY_WINDOW_MS = 500;
 const SWEEP_INTERVAL_MS = 10_000;
 const SWEEP_TICK_MS = 1_000;
@@ -145,7 +145,17 @@ export class Guard {
 			this.bootstrap().catch((error) => this.scheduleBootstrapRetry(error));
 		});
 
-		await this.bootstrap();
+		let ready = this.socket.connected !== false;
+		if (!ready && typeof this.socket.connect === "function") {
+			try {
+				await this.socket.connect();
+				ready = true;
+			} catch {
+				// HerdrSocket enters its reconnect loop. The reconnected listener above
+				// performs the first bootstrap when the server becomes available.
+			}
+		}
+		if (ready) await this.bootstrap();
 
 		this.timers.push(setInterval(() => this.sweepTick(), SWEEP_TICK_MS));
 		this.timers.push(
@@ -256,7 +266,8 @@ export class Guard {
 			lastSweep: 0,
 			sweeping: false,
 			projectPattern: null,
-			subscriptionIds: [],
+			baseSubscriptionId: null,
+			projectSubscriptionId: null,
 			onEvent: (msg) => this.onPush(paneId, msg),
 		};
 		this.panes.set(paneId, entry);
@@ -279,7 +290,7 @@ export class Guard {
 					],
 					entry.onEvent,
 				);
-				entry.subscriptionIds.push(subscription.subscriptionId);
+				entry.baseSubscriptionId = subscription.subscriptionId;
 				entry.subscribedAt = this.now();
 			} catch (err) {
 				this.logSystem("subscribe-error", `${paneId}: ${err.message}`);
@@ -319,8 +330,12 @@ export class Guard {
 	unwatchPane(paneId) {
 		const entry = this.panes.get(paneId);
 		this.panes.delete(paneId);
-		for (const subscriptionId of entry?.subscriptionIds ?? [])
-			this.socket.unsubscribe?.(subscriptionId);
+		for (const subscriptionId of [
+			entry?.baseSubscriptionId,
+			entry?.projectSubscriptionId,
+		]) {
+			if (subscriptionId) this.socket.unsubscribe?.(subscriptionId);
+		}
 	}
 
 	async ensureProjectSubscription(entry) {
@@ -331,7 +346,15 @@ export class Guard {
 			(rule) => !basePatterns.has(`${rule.match}:${rule.pattern}`),
 		);
 		const pattern = buildCombinedPattern(projectRules);
-		if (!pattern || pattern === entry.projectPattern) return;
+		if (pattern === entry.projectPattern) return;
+
+		if (entry.projectSubscriptionId) {
+			this.socket.unsubscribe?.(entry.projectSubscriptionId);
+			entry.projectSubscriptionId = null;
+		}
+		entry.projectPattern = null;
+		if (!pattern) return;
+
 		const subscription = await this.socket.subscribe(
 			[
 				{
@@ -345,7 +368,7 @@ export class Guard {
 			],
 			entry.onEvent,
 		);
-		entry.subscriptionIds.push(subscription.subscriptionId);
+		entry.projectSubscriptionId = subscription.subscriptionId;
 		entry.projectPattern = pattern;
 	}
 
@@ -360,21 +383,21 @@ export class Guard {
 				info?.result?.process_info?.foreground_processes?.[0] ??
 				info?.process_info?.foreground_processes?.[0] ??
 				null;
-			if (!fg) return;
-			entry.paneType = classifyPane(
-				fg.process_name ?? fg.name ?? fg.argv0 ?? "",
-				fg.terminal_title ?? "",
-			);
-			const cwd = fg.cwd ?? null;
-			if (cwd && cwd !== entry.cwd) {
-				this.overrideCache.delete(entry.cwd);
-				entry.cwd = cwd;
-				entry.projectPattern = null;
-				if (entry.reconciled) await this.ensureProjectSubscription(entry);
+			if (fg) {
+				entry.paneType = classifyPane(
+					fg.process_name ?? fg.name ?? fg.argv0 ?? "",
+					fg.terminal_title ?? "",
+				);
+				const cwd = fg.cwd ?? null;
+				if (cwd && cwd !== entry.cwd) {
+					this.overrideCache.delete(entry.cwd);
+					entry.cwd = cwd;
+				}
 			}
 		} catch {
 			/* metadata is best effort */
 		}
+		if (entry.reconciled) await this.ensureProjectSubscription(entry);
 	}
 
 	async readPane(paneId, lines = 120) {
@@ -497,7 +520,9 @@ export class Guard {
 					severity: match.rule.severity,
 					matched_text: match.line,
 					cwd: entry?.cwd,
-					action_taken: "post-mortem",
+					decision: "log-only-post-mortem",
+					interrupt_request: "not-requested",
+					prevention: "unknown",
 					source: "post-mortem",
 				});
 				this.bumpMatches();
@@ -575,7 +600,9 @@ export class Guard {
 					severity,
 					matched_text: line,
 					cwd: entry.cwd,
-					action_taken: "enforcement-paused",
+					decision: "log-only-enforcement-paused",
+					interrupt_request: "not-requested",
+					prevention: "unknown",
 					source,
 				});
 				this.bumpMatches();
@@ -597,14 +624,21 @@ export class Guard {
 		}
 
 		// Interrupt first: never await enrichment or notification before ctrl+c.
-		let action = "logged";
-		if (severity === "interrupt" && entry.paneType === "shell") {
-			const sent = await this.sendKeys(paneId, ["ctrl+c"]);
-			action = sent ? "interrupted" : "interrupt-failed";
+		// The RPC result only says whether Herdr accepted the request; prevention
+		// is not observable from the socket API.
+		const paneTypeAtDecision = entry.paneType ?? "output";
+		let decision = severity === "alert" ? "request-notification" : "log-only";
+		let interruptRequest = "not-requested";
+		if (severity === "interrupt" && paneTypeAtDecision === "shell") {
+			decision = "request-interrupt";
+			const accepted = await this.sendKeys(paneId, ["ctrl+c"]);
+			interruptRequest = accepted ? "accepted" : "failed";
+		} else if (severity === "interrupt") {
+			decision = "log-only-non-shell";
 		}
 		// Enrichment, best-effort.
 		let processArgv = null;
-		let paneType = entry.paneType ?? "output";
+		let paneType = paneTypeAtDecision;
 		try {
 			const info = await this.socket.request(
 				"pane.process_info",
@@ -640,18 +674,13 @@ export class Guard {
 				now - lastNotification >= COALESCE_FLUSH_MS
 			) {
 				this.notificationTimes.set(rule.id, now);
-				const notified = await this.notify(
+				await this.notify(
 					`herdr-guard: ${severity}`,
 					`${rule.reason}\n${paneId}: ${line.slice(0, 120)}`,
 				);
-				if (notified && action === "logged") action = "notified";
-			} else if (action === "logged") {
-				action = "notification-coalesced";
 			}
 		}
 		entry.paneType = paneType;
-		if (severity === "interrupt" && paneType !== "shell")
-			action = "logged-non-shell";
 
 		this.audit.write({
 			ts: now,
@@ -662,8 +691,11 @@ export class Guard {
 			matched_text: line,
 			process_argv: processArgv,
 			cwd: entry.cwd,
+			pane_type_at_decision: paneTypeAtDecision,
 			pane_type: paneType,
-			action_taken: action,
+			decision,
+			interrupt_request: interruptRequest,
+			prevention: "unknown",
 			source,
 		});
 		this.bumpMatches();
@@ -911,7 +943,6 @@ async function main() {
 		onDisconnect: () => process.stdout.write("\x07"),
 	});
 
-	await socket.connect();
 	await guard.start();
 
 	// Record our pane id so the watchdog event hook can recognize our death.

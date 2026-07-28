@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { EventEmitter } from "node:events";
 import { Guard } from "../src/watcher.mjs";
 import { compileRule, scanText } from "../src/policy.mjs";
@@ -14,11 +17,16 @@ const interruptRule = compileRule({
 });
 
 class FakeSocket extends EventEmitter {
-	constructor({ baseline = "$ danger", paneName = "zsh" } = {}) {
+	constructor({
+		baseline = "$ danger",
+		paneName = "zsh",
+		paneCwd = "/tmp",
+	} = {}) {
 		super();
 		this.baseline = baseline;
 		this.paneName = paneName;
-		this.panes = [{ pane_id: "p1", workspace_id: "w1", cwd: "/tmp" }];
+		this.paneCwd = paneCwd;
+		this.panes = [{ pane_id: "p1", workspace_id: "w1", cwd: paneCwd }];
 		this.calls = [];
 		this.lifecycleCallback = null;
 		this.outputCallback = null;
@@ -26,6 +34,7 @@ class FakeSocket extends EventEmitter {
 		this.snapshotCount = 0;
 		this.clearCount = 0;
 		this.unsubscribed = [];
+		this.nextSubscriptionId = 1;
 	}
 
 	async request(method, params = {}) {
@@ -42,7 +51,11 @@ class FakeSocket extends EventEmitter {
 				type: "pane_process_info",
 				process_info: {
 					foreground_processes: [
-						{ name: this.paneName, argv0: this.paneName, cwd: "/tmp" },
+						{
+							name: this.paneName,
+							argv0: this.paneName,
+							cwd: this.paneCwd,
+						},
 					],
 				},
 			};
@@ -70,7 +83,10 @@ class FakeSocket extends EventEmitter {
 				},
 			});
 		}
-		return { subscriptionId: "sub", ack: { type: "subscription_ack" } };
+		return {
+			subscriptionId: `sub-${this.nextSubscriptionId++}`,
+			ack: { type: "subscription_ack" },
+		};
 	}
 
 	async resetConnection() {
@@ -219,7 +235,68 @@ test("project subscription failure removes the base stream and pane", async () =
 		/project subscription failed/,
 	);
 	assert.equal(guard.panes.has("p2"), false);
-	assert.ok(socket.unsubscribed.includes("sub"));
+	assert.equal(socket.unsubscribed.length > 0, true);
+});
+
+test("project subscription ownership replaces policy and cwd streams, including no pattern", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "guard-project-stream-"));
+	const cwdA = path.join(root, "a");
+	const cwdB = path.join(root, "b");
+	const cwdNone = path.join(root, "none");
+	for (const cwd of [cwdA, cwdB, cwdNone]) fs.mkdirSync(cwd);
+	const overridePath = (cwd) => path.join(cwd, ".herdr-guard.json");
+	const writeOverride = (cwd, id, pattern, mtimeOffset = 0) => {
+		const file = overridePath(cwd);
+		fs.writeFileSync(
+			file,
+			JSON.stringify({
+				rules: [
+					{
+						id,
+						severity: "alert",
+						match: "substring",
+						pattern,
+						reason: id,
+					},
+				],
+			}),
+		);
+		const timestamp = new Date(Date.now() + mtimeOffset);
+		fs.utimesSync(file, timestamp, timestamp);
+	};
+	writeOverride(cwdA, "project-a", "alpha");
+	writeOverride(cwdB, "project-b", "bravo");
+
+	const socket = new FakeSocket({ baseline: "", paneCwd: cwdA });
+	const { guard } = makeGuard(socket);
+	guard.overrideDir = overridePath;
+	await guard.bootstrap();
+	const entry = guard.panes.get("p1");
+	const baseSubscriptionId = entry.baseSubscriptionId;
+	const firstProjectId = entry.projectSubscriptionId;
+	assert.ok(firstProjectId);
+	assert.match(entry.projectPattern, /alpha/);
+
+	writeOverride(cwdA, "project-a2", "alpine", 2_000);
+	await guard.refreshPaneInfo(entry);
+	const secondProjectId = entry.projectSubscriptionId;
+	assert.notEqual(secondProjectId, firstProjectId);
+	assert.ok(socket.unsubscribed.includes(firstProjectId));
+	assert.match(entry.projectPattern, /alpine/);
+
+	socket.paneCwd = cwdB;
+	await guard.refreshPaneInfo(entry);
+	const thirdProjectId = entry.projectSubscriptionId;
+	assert.notEqual(thirdProjectId, secondProjectId);
+	assert.ok(socket.unsubscribed.includes(secondProjectId));
+	assert.match(entry.projectPattern, /bravo/);
+
+	socket.paneCwd = cwdNone;
+	await guard.refreshPaneInfo(entry);
+	assert.equal(entry.projectSubscriptionId, null);
+	assert.equal(entry.projectPattern, null);
+	assert.ok(socket.unsubscribed.includes(thirdProjectId));
+	assert.equal(socket.unsubscribed.includes(baseSubscriptionId), false);
 });
 
 test("partial bootstrap failure clears successful subscriptions and pane state", async () => {
@@ -263,7 +340,16 @@ test("repeated shell interrupts are never deduped and notifications coalesce", a
 		socket.calls.filter((call) => call.method === "notification.show").length,
 		1,
 	);
-	assert.equal(entries.filter((entry) => entry.rule_id === "danger").length, 2);
+	const matches = entries.filter((entry) => entry.rule_id === "danger");
+	assert.equal(matches.length, 2);
+	assert.ok(
+		matches.every(
+			(entry) =>
+				entry.decision === "request-interrupt" &&
+				entry.interrupt_request === "accepted" &&
+				entry.prevention === "unknown",
+		),
+	);
 });
 
 test("interrupt text in a non-shell pane audits without sending keys", async () => {
@@ -279,7 +365,46 @@ test("interrupt text in a non-shell pane audits without sending keys", async () 
 		socket.calls.some((call) => call.method === "pane.send_keys"),
 		false,
 	);
-	assert.equal(entries.at(-1).action_taken, "logged-non-shell");
+	assert.equal(entries.at(-1).decision, "log-only-non-shell");
+	assert.equal(entries.at(-1).interrupt_request, "not-requested");
+	assert.equal(entries.at(-1).prevention, "unknown");
+});
+
+test("accepted interrupt requests remain recorded after pane reclassification", async () => {
+	const socket = new FakeSocket({ baseline: "", paneName: "zsh" });
+	const { guard, entries } = makeGuard(socket);
+	await guard.bootstrap();
+	socket.paneName = "node";
+	await guard.handleMatch(
+		guard.panes.get("p1"),
+		{ rule: interruptRule, line: "$ danger" },
+		"test",
+	);
+	const entry = entries.at(-1);
+	assert.equal(entry.pane_type_at_decision, "shell");
+	assert.equal(entry.pane_type, "output");
+	assert.equal(entry.decision, "request-interrupt");
+	assert.equal(entry.interrupt_request, "accepted");
+	assert.equal(entry.prevention, "unknown");
+});
+
+test("failed interrupt requests are recorded without claiming an interruption", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	const request = socket.request.bind(socket);
+	socket.request = async (method, params) => {
+		if (method === "pane.send_keys") throw new Error("request rejected");
+		return request(method, params);
+	};
+	const { guard, entries } = makeGuard(socket);
+	await guard.bootstrap();
+	await guard.handleMatch(
+		guard.panes.get("p1"),
+		{ rule: interruptRule, line: "$ danger" },
+		"test",
+	);
+	assert.equal(entries.at(-1).decision, "request-interrupt");
+	assert.equal(entries.at(-1).interrupt_request, "failed");
+	assert.equal(entries.at(-1).prevention, "unknown");
 });
 
 test("valid config changes reset the socket and fully bootstrap subscriptions", async () => {
@@ -336,6 +461,27 @@ test("failed bootstrap retries while the socket remains connected", async () => 
 	guard.scheduleBootstrapRetry(new Error("temporary bootstrap failure"));
 	await new Promise((resolve) => setTimeout(resolve, 1_050));
 	assert.equal(attempts, 1);
+	assert.equal(guard.connected, true);
+	guard.stop();
+});
+
+test("initial connection failure recovers and performs the first bootstrap", async () => {
+	const socket = new FakeSocket({ baseline: "" });
+	socket.connected = false;
+	socket.connect = async () => {
+		const error = new Error("server unavailable");
+		socket.emit("disconnected", error);
+		setTimeout(() => {
+			socket.connected = true;
+			socket.emit("reconnected");
+		}, 10);
+		throw error;
+	};
+	const { guard } = makeGuard(socket);
+	await guard.start();
+	assert.equal(guard.connected, false);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(socket.snapshotCount, 1);
 	assert.equal(guard.connected, true);
 	guard.stop();
 });

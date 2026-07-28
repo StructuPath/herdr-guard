@@ -9,20 +9,6 @@ import { cleanField } from "./policy.mjs";
 const MAX_BYTES = 10 * 1024 * 1024; // 10MB
 const GENERATIONS = 3;
 
-const SCALAR_FIELDS = new Set([
-	"rule_id",
-	"severity",
-	"matched_text",
-	"process_argv",
-	"cwd",
-	"pane_id",
-	"workspace_id",
-	"pane_type",
-	"action_taken",
-	"source",
-	"note",
-]);
-
 export class AuditLog {
 	constructor(
 		stateDir,
@@ -59,16 +45,14 @@ export class AuditLog {
 	}
 
 	/**
-	 * Append one entry. Scalar event-derived fields are cleaned; structured
-	 * fields (ts, counts) pass through. severity === "interrupt" partitions
-	 * into audit.interrupt.jsonl.
+	 * Append one entry. Every string field is cleaned; structured numeric fields
+	 * pass through. severity === "interrupt" partitions into
+	 * audit.interrupt.jsonl.
 	 */
 	write(entry) {
 		const clean = { ...entry };
 		for (const [key, value] of Object.entries(clean)) {
-			if (SCALAR_FIELDS.has(key) && typeof value === "string") {
-				clean[key] = cleanField(value);
-			}
+			if (typeof value === "string") clean[key] = cleanField(value);
 		}
 		const file =
 			entry?.severity === "interrupt"

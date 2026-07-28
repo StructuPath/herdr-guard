@@ -44,11 +44,19 @@ function startProtocolServer(target) {
 						continue;
 					}
 					const ack = `${JSON.stringify({ id: message.id, result: { type: "subscription_started" } })}\n`;
-					if (message.params.subscriptions[0]?.type === "pane.exited")
-						connection.end(ack);
-					else connection.write(ack);
+					const type = message.params.subscriptions[0]?.type;
+					if (type === "pane.exited") connection.end(ack);
+					else if (type === "pane.fragmented") {
+						const midpoint = Math.floor(ack.length / 2);
+						connection.write(ack.slice(0, midpoint));
+						setImmediate(() => connection.write(ack.slice(midpoint)));
+					} else connection.write(ack);
 				} else if (message.method === "hang") {
 					// Exercise client timeout cleanup.
+				} else if (message.method === "fail") {
+					connection.end(
+						`${JSON.stringify({ id: message.id, error: { code: "denied", message: "request denied" } })}\n`,
+					);
 				} else {
 					connection.end(
 						`${JSON.stringify({ id: message.id, result: { type: "pong", method: message.method } })}\n`,
@@ -62,6 +70,7 @@ function startProtocolServer(target) {
 	server.send = (record, message) => {
 		record.connection.write(`${JSON.stringify(message)}\n`);
 	};
+	server.sendRaw = (record, value) => record.connection.write(value);
 	return new Promise((resolve) => server.listen(target, () => resolve(server)));
 }
 
@@ -101,10 +110,15 @@ test("uses one-shot RPC sockets and a dedicated subscription socket", async () =
 		method: "pane.read",
 	});
 
-	const requestConnections = server.requests.map(({ connection }) => connection);
+	const requestConnections = server.requests.map(
+		({ connection }) => connection,
+	);
 	assert.equal(new Set(requestConnections).size, server.requests.length);
 	assert.ok(requestConnections.every((record) => record.messages.length === 1));
-	assert.equal(subscriptionRecord(server, "pane.created").connection.destroyed, false);
+	assert.equal(
+		subscriptionRecord(server, "pane.created").connection.destroyed,
+		false,
+	);
 	assert.equal(disconnects, 0);
 
 	client.close();
@@ -135,8 +149,14 @@ test("routes id-less events only to their dedicated subscription", async () => {
 	});
 	await new Promise((resolve) => setTimeout(resolve, 10));
 
-	assert.deepEqual(created.map((event) => event.event), ["pane_created"]);
-	assert.deepEqual(closed.map((event) => event.event), ["pane_closed"]);
+	assert.deepEqual(
+		created.map((event) => event.event),
+		["pane_created"],
+	);
+	assert.deepEqual(
+		closed.map((event) => event.event),
+		["pane_closed"],
+	);
 
 	client.close();
 	await closeServer(server, target);
@@ -164,7 +184,10 @@ test("a rejected subscription does not tear down healthy streams", async () => {
 
 	assert.equal(client.connected, true);
 	assert.equal(disconnects, 0);
-	assert.equal(subscriptionRecord(server, "pane.created").connection.destroyed, false);
+	assert.equal(
+		subscriptionRecord(server, "pane.created").connection.destroyed,
+		false,
+	);
 
 	client.close();
 	await closeServer(server, target);
@@ -279,9 +302,147 @@ test("reset intentionally replaces subscriptions without reporting an outage", a
 	assert.equal(disconnects, 0);
 
 	await client.subscribe([{ type: "pane.closed" }], () => {});
-	assert.equal(subscriptionRecord(server, "pane.closed").connection.destroyed, false);
+	assert.equal(
+		subscriptionRecord(server, "pane.closed").connection.destroyed,
+		false,
+	);
 
 	client.close();
+	await closeServer(server, target);
+});
+
+test("parses fragmented subscription acknowledgements and event frames", async () => {
+	const target = socketPath();
+	const server = await startProtocolServer(target);
+	const client = new HerdrSocket(target, { connectTimeoutMs: 1000 });
+	await client.connect();
+	const events = [];
+	await client.subscribe([{ type: "pane.fragmented" }], (event) =>
+		events.push(event),
+	);
+	const record = subscriptionRecord(server, "pane.fragmented");
+	const frame = `${JSON.stringify({ event: "pane_fragmented", data: { pane_id: "p1" } })}\n`;
+	const midpoint = Math.floor(frame.length / 2);
+	server.sendRaw(record, frame.slice(0, midpoint));
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(events.length, 0);
+	server.sendRaw(record, frame.slice(midpoint));
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(
+		events.map((event) => event.event),
+		["pane_fragmented"],
+	);
+
+	client.close();
+	await closeServer(server, target);
+});
+
+test("parses multiple subscription events delivered in one chunk", async () => {
+	const target = socketPath();
+	const server = await startProtocolServer(target);
+	const client = new HerdrSocket(target, { connectTimeoutMs: 1000 });
+	await client.connect();
+	const events = [];
+	await client.subscribe([{ type: "pane.created" }], (event) =>
+		events.push(event),
+	);
+	const record = subscriptionRecord(server, "pane.created");
+	server.sendRaw(
+		record,
+		[
+			{ event: "pane_created", data: { pane_id: "p1" } },
+			{ event: "pane_created", data: { pane_id: "p2" } },
+		]
+			.map((message) => JSON.stringify(message))
+			.join("\n") + "\n",
+	);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.deepEqual(
+		events.map((event) => event.data.pane_id),
+		["p1", "p2"],
+	);
+
+	client.close();
+	await closeServer(server, target);
+});
+
+test("propagates Herdr response error codes", async () => {
+	const target = socketPath();
+	const server = await startProtocolServer(target);
+	const client = new HerdrSocket(target, { connectTimeoutMs: 1000 });
+	await client.connect();
+	await assert.rejects(client.request("fail"), (error) => {
+		assert.equal(error.message, "request denied");
+		assert.equal(error.code, "denied");
+		return true;
+	});
+
+	client.close();
+	await closeServer(server, target);
+});
+
+test("reports subscription callback failures without dropping the stream", async () => {
+	const target = socketPath();
+	const server = await startProtocolServer(target);
+	const client = new HerdrSocket(target, { connectTimeoutMs: 1000 });
+	await client.connect();
+	await client.subscribe([{ type: "pane.created" }], () => {
+		throw new Error("callback failed");
+	});
+	const callbackError = once(client, "callback-error");
+	server.send(subscriptionRecord(server, "pane.created"), {
+		event: "pane_created",
+		data: { pane_id: "p1" },
+	});
+	const [error] = await callbackError;
+	assert.equal(error.message, "callback failed");
+	assert.equal(client.connected, true);
+	assert.equal(
+		subscriptionRecord(server, "pane.created").connection.destroyed,
+		false,
+	);
+
+	client.close();
+	await closeServer(server, target);
+});
+
+test("initial connection failure enters recovery and reconnects when Herdr appears", async () => {
+	const target = socketPath();
+	const client = new HerdrSocket(target, {
+		minDelayMs: 15,
+		maxDelayMs: 30,
+		connectTimeoutMs: 100,
+	});
+	await assert.rejects(client.connect());
+	assert.equal(client.connected, false);
+	assert.equal(client.outage, true);
+	const reconnected = once(client, "reconnected");
+	const server = await startProtocolServer(target);
+	await Promise.race([
+		reconnected,
+		new Promise((_, reject) =>
+			setTimeout(() => reject(new Error("initial reconnect timeout")), 1000),
+		),
+	]);
+	assert.equal(client.connected, true);
+	assert.deepEqual(await client.request("ping"), {
+		type: "pong",
+		method: "ping",
+	});
+
+	client.close();
+	await closeServer(server, target);
+});
+
+test("close during an initial connection attempt cannot restore readiness", async () => {
+	const target = socketPath();
+	const server = await startProtocolServer(target);
+	const client = new HerdrSocket(target, { connectTimeoutMs: 1000 });
+	const connecting = client.connect();
+	client.close();
+	await assert.rejects(connecting, /connection superseded|closed/);
+	assert.equal(client.connected, false);
+
 	await closeServer(server, target);
 });
 

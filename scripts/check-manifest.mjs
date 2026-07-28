@@ -56,6 +56,21 @@ function commandEntrypoint(command) {
 	return null;
 }
 
+function declaredVersion(root, relativePath, pattern, errors) {
+	try {
+		const source = fs.readFileSync(path.join(root, relativePath), "utf8");
+		const match = pattern.exec(source);
+		if (!match) {
+			errors.push(`${relativePath} does not declare a release version`);
+			return null;
+		}
+		return match[1];
+	} catch (error) {
+		errors.push(`${relativePath} could not be read: ${error.message}`);
+		return null;
+	}
+}
+
 export function validateRepository(root) {
 	const errors = [];
 	let packageJson;
@@ -84,6 +99,21 @@ export function validateRepository(root) {
 		errors.push(
 			`version mismatch: package.json=${packageJson.version} herdr-plugin.toml=${manifest.version}`,
 		);
+	}
+
+	const releaseVersions = [
+		["src/watcher.mjs", /const VERSION = "([^"]+)";/],
+		["scripts/demo.sh", /herdr-guard.*?v([0-9]+\.[0-9]+\.[0-9]+)/s],
+		["README.md", /Current runtime and manifest release: \*\*([^*]+)\*\*/],
+		["docs/SPEC.md", /runtime ([0-9]+\.[0-9]+\.[0-9]+)/],
+	];
+	for (const [relativePath, pattern] of releaseVersions) {
+		const version = declaredVersion(root, relativePath, pattern, errors);
+		if (version && version !== packageJson.version) {
+			errors.push(
+				`version mismatch: package.json=${packageJson.version} ${relativePath}=${version}`,
+			);
+		}
 	}
 
 	const commands = manifestCommands(manifest, errors);

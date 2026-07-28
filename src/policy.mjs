@@ -517,7 +517,7 @@ export function mergeProjectOverride(
 
 // ---------------------------------------------------------------------------
 // Dedupe — time-bounded, LRU-capped, interrupt rules NEVER deduped
-// (the pre-seeding attack: cancel once, retype, hit Enter — must cancel again)
+// (the pre-seeding attack: request once, retype, hit Enter — must request again)
 // ---------------------------------------------------------------------------
 
 export class Dedupe {

@@ -11,6 +11,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function fixture() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-guard-manifest-"));
 	fs.mkdirSync(path.join(dir, "scripts"));
+	fs.mkdirSync(path.join(dir, "src"));
+	fs.mkdirSync(path.join(dir, "docs"));
 	fs.writeFileSync(
 		path.join(dir, "package.json"),
 		JSON.stringify({ version: "1.2.3" }),
@@ -22,6 +24,23 @@ function fixture() {
 	fs.writeFileSync(path.join(dir, "scripts", "open.sh"), "#!/bin/sh\n", {
 		mode: 0o755,
 	});
+	fs.writeFileSync(
+		path.join(dir, "src", "watcher.mjs"),
+		'const VERSION = "1.2.3";\n',
+	);
+	fs.writeFileSync(
+		path.join(dir, "scripts", "demo.sh"),
+		'printf "herdr-guard v1.2.3\\n"\n',
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(
+		path.join(dir, "README.md"),
+		"Current runtime and manifest release: **1.2.3**.\n",
+	);
+	fs.writeFileSync(
+		path.join(dir, "docs", "SPEC.md"),
+		"# Spec (runtime 1.2.3)\n",
+	);
 	return dir;
 }
 

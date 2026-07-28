@@ -35,7 +35,13 @@ export class HerdrSocket extends EventEmitter {
 	async connect() {
 		if (this.closedByUs) throw new Error("closed");
 		const generation = this.generation;
-		await this.#probe();
+		try {
+			await this.#probe();
+		} catch (error) {
+			if (this.closedByUs || generation !== this.generation) throw error;
+			this.#handleOutage(error);
+			throw error;
+		}
 		if (this.closedByUs || generation !== this.generation)
 			throw new Error("connection superseded");
 		this.connected = true;
@@ -213,7 +219,10 @@ export class HerdrSocket extends EventEmitter {
 						continue;
 					}
 
-					if (typeof message?.event === "string" && message.data !== undefined) {
+					if (
+						typeof message?.event === "string" &&
+						message.data !== undefined
+					) {
 						try {
 							onEvent(message);
 						} catch (error) {

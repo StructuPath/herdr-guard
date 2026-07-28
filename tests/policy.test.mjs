@@ -158,6 +158,10 @@ test("audit log enforces modes, partitions, rotates, and removes secrets/control
 		severity: "interrupt",
 		matched_text: `$ TOKEN=secret sk-abcdefghijk\x1b]8;;https://evil\x07${"x".repeat(300)}\x1b\\`,
 		pane_id: "p",
+		decision: "request-interrupt",
+		interrupt_request: "accepted",
+		prevention: "unknown",
+		future_string: "TOKEN=secret\x1b]0;hidden\x07",
 	});
 	for (let ts = 2; ts <= 8; ts++) {
 		log.write({
@@ -179,6 +183,10 @@ test("audit log enforces modes, partitions, rotates, and removes secrets/control
 	assert.doesNotMatch(interrupt, /secret|sk-abcdefghijk|https:\/\/evil|\x1b/);
 	const parsed = JSON.parse(interrupt.trim());
 	assert.ok(parsed.matched_text.length <= 200);
+	assert.equal(parsed.decision, "request-interrupt");
+	assert.equal(parsed.interrupt_request, "accepted");
+	assert.equal(parsed.prevention, "unknown");
+	assert.doesNotMatch(parsed.future_string, /secret|\x1b/);
 	assert.ok(fs.existsSync(path.join(dir, "audit.jsonl.1")));
 	assert.ok(log.tail(20).some((entry) => entry.severity === "interrupt"));
 	assert.ok(log.tail(20).some((entry) => entry.severity === "alert"));
