@@ -21,7 +21,7 @@ RESULT=$(
 IFS=$'\t' read -r SEVERITY RULE_ID REASON <<<"$RESULT"
 
 printf '\n'
-printf '  \033[1;38;5;75mherdr-guard\033[0m \033[2mv0.1.1\033[0m    \033[1;32m● ACTIVE\033[0m\n'
+printf '  \033[1;38;5;75mherdr-guard\033[0m \033[2mv0.2.0\033[0m    \033[1;32m● ACTIVE\033[0m\n'
 printf '  \033[2mCross-agent command policy for Herdr\033[0m\n'
 
 case "$SEVERITY" in

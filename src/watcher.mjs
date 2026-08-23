@@ -27,7 +27,7 @@ import {
 import { renderDashboard } from "./render.mjs";
 import { ReporterServer, defaultReporterSocketPath } from "./reporter.mjs";
 
-const VERSION = "0.1.1";
+const VERSION = "0.2.0";
 const REPLAY_WINDOW_MS = 500;
 const SWEEP_INTERVAL_MS = 10_000;
 const SWEEP_TICK_MS = 1_000;

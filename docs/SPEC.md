@@ -1,4 +1,4 @@
-# herdr-guard — Spec (v1, runtime 0.1.1)
+# herdr-guard — Spec (v1, runtime 0.2.0)
 
 Cross-agent command policy layer for [Herdr](https://herdr.dev). Watches herdr
 panes for dangerous commands, then audits, alerts, or interrupts — from one

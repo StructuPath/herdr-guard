@@ -50,7 +50,7 @@ You can try the tagged release without an account or service. It requires
 Herdr 0.7.5+, Node.js 20+, and macOS or Linux:
 
 ```sh
-herdr plugin install StructuPath/herdr-guard --ref v0.1.1
+herdr plugin install StructuPath/herdr-guard --ref v0.2.0
 ```
 
 The repository includes the policy, manifest, an honest coverage matrix, a

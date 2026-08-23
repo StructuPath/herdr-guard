@@ -4,7 +4,7 @@ Cross-agent command policy for [Herdr](https://herdr.dev): watch every pane,
 audit risky commands, notify you, and best-effort interrupt dangerous shell
 input.
 
-Current runtime and manifest release: **0.1.1**.
+Current runtime and manifest release: **0.2.0**.
 
 **Docs:** the [StructuPath Herdr Plugins wiki](https://github.com/StructuPath/herdr-browser/wiki)
 is the practical guide to this plugin and its three siblings (Browser, Swarm,
@@ -164,7 +164,8 @@ vhs assets/demo.tape
 
 ## Future work
 
-- Harness reporters for Pi/Claude Code tool calls.
+- Additional harness reporters (Pi extension, Codex) speaking the shipped
+  reporter protocol.
 - Shell pre-exec approval flow.
 - Popup visibility in Herdr's event/API surface.
 - Per-plugin socket ACLs or read-only tokens.
