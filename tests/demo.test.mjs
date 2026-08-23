@@ -32,6 +32,7 @@ test("interrupt demo describes a request dry-run without claiming prevention", (
 	assert.match(output, /would request Ctrl\+C in a classified shell/i);
 	assert.match(output, /prevention is not observed/i);
 	assert.match(output, /Audit\s+Would write/);
+	assert.match(output, /Harness verdict\s+deny/);
 	assertTruthfulVocabulary(output);
 });
 
@@ -40,6 +41,7 @@ test("alert demo describes notification request only", () => {
 	assert.match(output, /ALERT/);
 	assert.match(output, /Decision\s+request-notification/);
 	assert.match(output, /would not request Ctrl\+C/i);
+	assert.match(output, /Harness verdict\s+warn/);
 	assertTruthfulVocabulary(output);
 });
 
@@ -48,6 +50,7 @@ test("audit demo describes logging only", () => {
 	assert.match(output, /AUDIT/);
 	assert.match(output, /Decision\s+log-only/);
 	assert.match(output, /would log this match only/i);
+	assert.match(output, /Harness verdict\s+allow/);
 	assertTruthfulVocabulary(output);
 });
 

@@ -19,9 +19,20 @@ herdr-guard is a Herdr plugin that applies one text policy across those panes.
 Rules can audit a match, send an alert, or attempt to interrupt an interactive
 shell by requesting Ctrl+C in the pane that produced the event. Guard records
 whether Herdr accepted that request, but prevention remains unknown. The
-default policy covers destructive filesystem and infrastructure commands,
-force pushes, secret-file reads, publishing, exfiltration indicators, and
-common attempts to hide execution.
+default policy is 54 rules covering destructive filesystem, git, cloud, and
+database commands, secret and credential reads, publishing, exfiltration
+indicators, guard tampering, and common attempts to hide execution — and every
+rule ships with hit and near-miss tests, because false positives train people
+to pause the guard.
+
+The same policy now also enforces before execution. The guard listens on a
+local unix socket, and a bundled Claude Code PreToolUse hook reports each tool
+call and honors the verdict: interrupt-tier rules deny the call, alert-tier
+rules turn into a permission prompt, and everything is audited in one place.
+The hook is strictly fail-open — a stopped guard never breaks the harness —
+and the protocol is one NDJSON line, so other harnesses can wire in the same
+way. Pane-watching stays the cross-agent backstop; the hook is where
+prevention actually exists.
 
 The implementation is plain ESM Node.js 20 with no runtime dependencies. It
 connects to Herdr's NDJSON socket, takes a pane snapshot, subscribes to
@@ -39,12 +50,14 @@ are private, rotated, partitioned by severity, sanitized, and redacted before
 writing. Socket disconnects are visible and trigger reconnect plus a complete
 re-bootstrap.
 
-This is not a sandbox or an intent detector. Interactive Bash and Zsh input is
-the strongest case because canonical terminal echo exposes text before Enter.
-Commands executed internally by Pi, Claude Code, or Codex TUIs are usually not
-visible unless the TUI renders them. Raw/no-echo shells, popup panes, nested
-multiplexers, and semantic obfuscation are additional blind spots. Native agent
-hooks remain the authoritative enforcement point for tool calls.
+This is not a sandbox or an intent detector. On the pane side, interactive
+Bash and Zsh input is the strongest case because canonical terminal echo
+exposes text before Enter; commands executed internally by Pi, Claude Code,
+or Codex TUIs are usually not visible unless the TUI renders them — which is
+exactly the gap the reporter hook closes for Claude Code. Raw/no-echo shells,
+popup panes, nested multiplexers, and semantic obfuscation remain blind spots,
+and a process with the user's privileges can still stop the guard (the hook
+fails open by design; tampering attempts are alert rules).
 
 You can try the tagged release without an account or service. It requires
 Herdr 0.7.5+, Node.js 20+, and macOS or Linux:
@@ -53,12 +66,12 @@ Herdr 0.7.5+, Node.js 20+, and macOS or Linux:
 herdr plugin install StructuPath/herdr-guard --ref v0.2.0
 ```
 
-The repository includes the policy, manifest, an honest coverage matrix, a
-reproducible demo, and a fake-socket/runtime regression suite. I would
-especially value feedback on false-positive tradeoffs, useful default rules,
-and whether the next step should be shell pre-exec approval, small reporters
-for agent harnesses, or upstream Herdr capabilities such as popup visibility
-and socket ACLs.
+The repository includes the policy, manifest, an honest coverage matrix, the
+Claude Code hook, a reproducible demo, and a fake-socket/runtime regression
+suite. I would especially value feedback on false-positive tradeoffs, useful
+default rules, and whether the next step should be reporters for more
+harnesses (Pi, Codex), shell pre-exec approval, or upstream Herdr
+capabilities such as popup visibility and socket ACLs.
 
 ## Posting notes
 
