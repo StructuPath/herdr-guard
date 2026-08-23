@@ -25,6 +25,48 @@
       "reason": "Filesystem format command"
     },
     {
+      "id": "wipe-device",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "(wipefs|blkdiscard)\\s|shred\\s+[^\\n]*/dev/",
+      "reason": "Wiping or discarding a block device"
+    },
+    {
+      "id": "redirect-to-device",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": ">\\s*/dev/(sd[a-z]|hd[a-z]|vd[a-z]|nvme[0-9]|mmcblk[0-9]|disk[0-9])",
+      "reason": "Shell redirect writing directly onto a block device"
+    },
+    {
+      "id": "chmod-recursive-rootish",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "(chmod|chown)\\s+(-[^\\s]+\\s+)*-[a-zA-Z]*R[a-zA-Z]*\\s+[^\\s]+\\s+(/|~/?|\\$HOME/?)(\\s|$)",
+      "reason": "Recursive permission or ownership change aimed at a root-level or home path"
+    },
+    {
+      "id": "find-delete-rootish",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "find\\s+(/|~/?|\\$HOME/?)\\s+[^\\n]*(-delete|-exec\\s+rm)",
+      "reason": "find sweeping a root-level or home path with delete actions"
+    },
+    {
+      "id": "fork-bomb",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;",
+      "reason": "Classic shell fork bomb"
+    },
+    {
+      "id": "crontab-remove",
+      "severity": "interrupt",
+      "match": "regex",
+      "pattern": "crontab\\s+-(ir|ri|r)(\\s|$)",
+      "reason": "crontab -r silently deletes every scheduled job"
+    },
+    {
       "id": "terraform-destroy",
       "severity": "interrupt",
       "match": "regex",
@@ -42,8 +84,22 @@
       "id": "git-push-force",
       "severity": "alert",
       "match": "regex",
-      "pattern": "git\\s+push\\s+[^\\n]*(--force|-f\\b)",
+      "pattern": "git\\s+push\\s+[^\\n]*(--force(\\s|$|=)|-f(\\s|$)|--mirror\\b)",
       "reason": "Force push rewrites shared history"
+    },
+    {
+      "id": "git-push-force-with-lease",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "git\\s+push\\s+[^\\n]*--force-with-lease",
+      "reason": "Lease-guarded force push still rewrites history"
+    },
+    {
+      "id": "git-push-delete-remote",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "git\\s+push\\s+[^\\n]*(--delete|-d\\s+[^\\s]+\\s+[^\\s:]+(\\s|$))",
+      "reason": "Deleting a remote branch or tag"
     },
     {
       "id": "git-reset-hard",
@@ -51,6 +107,13 @@
       "match": "regex",
       "pattern": "git\\s+reset\\s+--hard",
       "reason": "git reset --hard discards uncommitted work"
+    },
+    {
+      "id": "gh-repo-delete",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "gh\\s+repo\\s+(delete|archive)\\s|gh\\s+release\\s+delete\\s",
+      "reason": "Deleting or archiving a GitHub repository or release"
     },
     {
       "id": "sudo",
@@ -74,6 +137,13 @@
       "reason": "Reading a .env secrets file into terminal output"
     },
     {
+      "id": "read-credential-files",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(cat|less|more|bat|tail|head|cp|strings|xxd|base64)\\s+[^\\n]*(\\.ssh/id_[a-z0-9_]+(\\s|$)|\\.aws/credentials|\\.netrc|\\.pypirc|\\.npmrc|/etc/shadow|\\.kube/config|\\.docker/config\\.json)",
+      "reason": "Reading SSH keys or credential stores into terminal output"
+    },
+    {
       "id": "keychain-dump",
       "severity": "alert",
       "match": "substring",
@@ -88,11 +158,61 @@
       "reason": "Publishing a package is a public, hard-to-undo release"
     },
     {
+      "id": "pkg-publish-family",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "cargo\\s+publish\\b|twine\\s+upload\\b|gem\\s+push\\b|(dart|flutter)\\s+pub\\s+publish\\b|pnpm\\s+publish\\b|yarn\\s+(npm\\s+)?publish\\b",
+      "reason": "Publishing a package is a public, hard-to-undo release"
+    },
+    {
       "id": "aws-s3-destructive",
       "severity": "alert",
       "match": "regex",
-      "pattern": "aws\\s+s3\\s+(rm|sync\\s+[^\\n]*--delete)",
+      "pattern": "aws\\s+s3\\s+(rm|rb|sync\\s+[^\\n]*--delete)",
       "reason": "Destructive S3 operation"
+    },
+    {
+      "id": "aws-resource-delete",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "aws\\s+(ec2\\s+terminate-instances|rds\\s+delete-db|dynamodb\\s+delete-table|cloudformation\\s+delete-stack|iam\\s+delete-|kms\\s+schedule-key-deletion|route53\\s+delete-hosted-zone|eks\\s+delete-cluster)",
+      "reason": "Deleting AWS infrastructure"
+    },
+    {
+      "id": "gcloud-resource-delete",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "gcloud\\s+[^\\n]*(compute|sql|container|storage|run|functions|projects)\\s+[^\\n]*\\bdelete\\b",
+      "reason": "Deleting Google Cloud infrastructure"
+    },
+    {
+      "id": "az-resource-delete",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "az\\s+(group|vm|aks|webapp|storage\\s+account|sql\\s+(db|server)|keyvault)\\s+[^\\n]*\\bdelete\\b",
+      "reason": "Deleting Azure infrastructure"
+    },
+    {
+      "id": "paas-app-destroy",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "heroku\\s+apps:destroy|fly(ctl)?\\s+apps\\s+destroy|vercel\\s+(remove|rm)\\s|netlify\\s+sites:delete|railway\\s+down\\b",
+      "reason": "Destroying a deployed application"
+    },
+    {
+      "id": "db-drop-statement",
+      "severity": "alert",
+      "match": "regex",
+      "prompt_only": true,
+      "pattern": "(DROP|drop)\\s+(TABLE|table|DATABASE|database|SCHEMA|schema)\\s|(TRUNCATE|truncate)\\s+(TABLE|table)\\s|(dropdb|dropuser)\\s",
+      "reason": "Dropping or truncating database objects"
+    },
+    {
+      "id": "kubectl-delete-namespace",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "kubectl\\s+delete\\s+(ns|namespace)\\s|helm\\s+(uninstall|delete)\\s",
+      "reason": "Deleting a Kubernetes namespace or Helm release"
     },
     {
       "id": "docker-prune-all",
@@ -102,11 +222,32 @@
       "reason": "docker system prune -a removes all unused images and volumes"
     },
     {
+      "id": "docker-destructive",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "docker\\s+volume\\s+(prune|rm)|docker\\s+rm\\s+-[a-zA-Z]*f[^\\n]*\\$\\(docker\\s+ps",
+      "reason": "Removing Docker volumes or force-removing all containers"
+    },
+    {
       "id": "exfil-sensitive-dirs",
       "severity": "alert",
       "match": "regex",
       "pattern": "(scp|rsync|rclone\\s+(copy|move|sync))\\s+[^\\n]*(~/\\.ssh|~/\\.aws|~/\\.gnupg|fsw-bid-data)",
       "reason": "Copying credential or bid-data directories off-machine"
+    },
+    {
+      "id": "exfil-curl-upload",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "curl\\s+[^\\n]*((-T|--upload-file)\\s+[^\\n]*(\\.env\\b|\\.ssh/|\\.aws/|credentials|/etc/shadow)|(-d|--data[a-z-]*|-F\\s+[^\\s=]+=)\\s*[\"']?@[^\\n]*(\\.env\\b|\\.ssh/|\\.aws/|credentials|/etc/shadow))",
+      "reason": "Uploading local secret material with curl"
+    },
+    {
+      "id": "firewall-disable",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "iptables\\s+[^\\n]*-F\\b|ufw\\s+disable\\b|setenforce\\s+0\\b",
+      "reason": "Disabling firewall or mandatory access control"
     },
     {
       "id": "evasion-stty-noecho",
@@ -137,11 +278,25 @@
       "reason": "Detaching a process from the shell hides its lifetime"
     },
     {
+      "id": "evasion-setsid-at",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "setsid\\s+[^\\s]|\\|\\s*at\\s+now\\b|echo\\s+[^\\n]*\\|\\s*batch\\b",
+      "reason": "Scheduling or detaching execution outside the watched shell"
+    },
+    {
       "id": "evasion-base64-shell",
       "severity": "alert",
       "match": "regex",
       "pattern": "base64\\s+(-d|--decode|-D)[^\\n]*\\|\\s*(ba|z)?sh\\b",
       "reason": "Executing base64-decoded content — classic obfuscation"
+    },
+    {
+      "id": "evasion-hex-decode-shell",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "(xxd\\s+-r|printf\\s+[^\\n]*\\\\x)[^\\n]*\\|\\s*(ba|z)?sh\\b",
+      "reason": "Executing hex-decoded content — classic obfuscation"
     },
     {
       "id": "evasion-eval-subshell",
@@ -156,6 +311,20 @@
       "match": "regex",
       "pattern": "(ba|z)?sh\\s+-c\\s+[\"']\\$\\(",
       "reason": "Shell -c over a substituted string obscures the real command"
+    },
+    {
+      "id": "evasion-history-clear",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "history\\s+-c\\b|HISTFILE=(/dev/null|\\s|$)|unset\\s+HISTFILE\\b|HISTSIZE=0\\b|set\\s+\\+o\\s+history\\b",
+      "reason": "Clearing or disabling shell history hides what was run"
+    },
+    {
+      "id": "guard-tamper",
+      "severity": "alert",
+      "match": "regex",
+      "pattern": "herdr\\s+plugin\\s+(disable|remove|uninstall)\\s|herdr\\s+server\\s+stop\\b|(pkill|killall)\\s+[^\\n]*[Hh]erdr|rm\\s+[^\\n]*(\\.herdr-guard|herdr[^\\n]*(rules\\.json|audit[^\\n]*\\.jsonl))",
+      "reason": "Attempt to disable the guard or tamper with its policy/audit files"
     },
     {
       "id": "git-clean-force",
@@ -177,6 +346,20 @@
       "match": "regex",
       "pattern": "git\\s+branch\\s+-D\\s",
       "reason": "Force-deleting a branch"
+    },
+    {
+      "id": "git-history-rewrite",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "git\\s+(filter-branch|filter-repo)\\b",
+      "reason": "Rewriting repository history"
+    },
+    {
+      "id": "git-stash-discard",
+      "severity": "audit",
+      "match": "regex",
+      "pattern": "git\\s+stash\\s+(drop|clear)\\b",
+      "reason": "Discarding stashed work"
     },
     {
       "id": "rm-rf-generic",

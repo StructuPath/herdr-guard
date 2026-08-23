@@ -158,17 +158,32 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
   validator at load: cap length 512, reject backrefs, reject unparseable
   regex (log + notify on rejection).
 - **Default rules** (from pi damage-control, pi-library sp-damage-control
-  - safe-mode, red-team additions):
+  - safe-mode, red-team additions; every rule has hit/near-miss coverage in
+  `tests/rules-default.test.mjs`):
   - *interrupt*: `rm -rf` rootish paths, `dd of=/dev`, `mkfs`,
-    `git push --force` / `reset --hard` (alert or interrupt — ship alert),
-    `terraform destroy`, `kubectl delete` prod-ish contexts
-  - *alert*: `sudo`, `curl|sh` / `wget|sh`, `cat .env*` / `security
-    find-generic-password -w`, `npm publish`, `aws s3 rm|sync --delete`,
-    `docker system prune -a`, exfil (`scp|rsync` of `~/.ssh`, `~/.aws`,
-    `~/fsw-bid-data`), **evasion indicators**: `stty -echo`, `stty raw`,
-    `tmux.*(-d|-b)`, `screen -dm`, `disown`, `base64 -d` piped to shell,
-    `eval $(`, `sh -c "$(`
-  - *audit*: everything above plus git destructive variants
+    `wipefs`/`blkdiscard`/`shred` on devices, shell redirects onto block
+    devices, recursive `chmod`/`chown` on rootish paths, `find / -delete`,
+    fork bombs, `crontab -r`, `terraform destroy`, `kubectl delete`
+    prod-ish contexts
+  - *alert*: `sudo`, `curl|sh` / `wget|sh`, `cat .env*` / SSH-key and
+    credential-store reads / `security find-generic-password -w`,
+    `npm publish` and the wider publish family (`cargo publish`,
+    `twine upload`, `gem push`, `yarn`/`pnpm publish`), `aws s3
+    rm|rb|sync --delete`, AWS/GCP/Azure resource deletion, PaaS app
+    destruction, DB `DROP`/`TRUNCATE` (prompt-only), `kubectl delete
+    namespace` / `helm uninstall`, `docker system prune -a` and volume
+    removal, `git push --force|--mirror|--delete` (force-with-lease is
+    audit-only), `gh repo delete`, firewall disabling, exfil (`scp|rsync`
+    of `~/.ssh`, `~/.aws`, `~/fsw-bid-data`; `curl` uploads of secret
+    material), **guard tampering** (`herdr plugin disable`, killing
+    Herdr, deleting guard rules/audit files), **evasion indicators**:
+    `stty -echo`, `stty raw`, `tmux.*(-d|-b)`, `screen -dm`, `disown`,
+    `setsid`, `| at now`, history clearing (`history -c`,
+    `HISTFILE=/dev/null`, `unset HISTFILE`), `base64 -d` / `xxd -r` /
+    `printf '\x..'` piped to shell, `eval $(`, `sh -c "$(`
+  - *audit*: git destructive variants (`clean -f`, `checkout -- .`,
+    `branch -D`, `filter-branch`/`filter-repo`, `stash drop|clear`,
+    `push --force-with-lease`), generic `rm -rf`
 - **Project override**: `<workspace cwd>/.herdr-guard.json`, merged lazily
   per pane cwd.
   - May **add** rules (`substring` only — repo-controlled regex never

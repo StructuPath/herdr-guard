@@ -72,10 +72,18 @@ rules unless the user explicitly enables `allow_project_override` in the
 global configuration. Configuration writes are atomic and malformed updates
 keep the last known-good policy.
 
-The shipped policy covers destructive filesystem/Git/infrastructure commands,
-secret-file reads, publishing, data exfiltration, and evasion indicators such
-as `stty -echo`, detached tmux/screen, `disown`, base64-to-shell, and eval
-subshells. Review the defaults before enabling interrupt rules in production.
+The shipped policy covers destructive filesystem/Git/infrastructure commands
+(including cloud-resource deletion on AWS/GCP/Azure, PaaS app destruction,
+Kubernetes/Helm teardown, and database `DROP`/`TRUNCATE` statements),
+secret-file and credential reads, package publishing, data exfiltration
+(`scp`/`rsync` of key directories, `curl` uploads of secret material), guard
+tampering (`herdr plugin disable`, killing Herdr, deleting rules or audit
+files), and evasion indicators such as `stty -echo`, detached tmux/screen,
+`disown`/`setsid`, history clearing, and base64/hex-to-shell decoding. Every
+rule ships with hit and near-miss tests (`tests/rules-default.test.mjs`);
+`git push --force-with-lease`, `id_rsa.pub` reads, and similar benign
+neighbors are explicitly kept silent. Review the defaults before enabling
+interrupt rules in production.
 
 ## Security and trust
 
