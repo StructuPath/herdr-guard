@@ -21,8 +21,9 @@ The guard matches command **text**, not command **intent**. Semantic
 obfuscation (`base64 -d | sh`, `r''m`, `$x -rf`, python `shutil.rmtree`)
 defeats content matching; obfuscation-*indicator* alert rules make attempts
 loud but can't stop them. Harness-level hooks remain the enforcement point
-inside TUI agents; v2 path is tiny harness reporters (Pi extension / Claude
-Code hook) POSTing tool calls to the guard for unified audit+policy.
+inside TUI agents — and the guard now ships that path: harness reporters
+(see "Harness reporter ingest" below) submit tool calls pre-execution for a
+unified audit + policy verdict the harness can enforce.
 
 ## Architecture
 
@@ -40,8 +41,44 @@ herdr-guard/
     rules-default.json    # shipped default policy (seeded into config dir)
     audit.mjs             # JSONL append, redaction, sanitization, partitioned rotation
     render.mjs            # dashboard rendering (ANSI, sanitized)
+    reporter.mjs          # harness reporter ingest: NDJSON unix-socket server
+  hooks/
+    claude-code-pretooluse.mjs  # shipped Claude Code PreToolUse reporter (fail-open)
   tests/*.test.mjs        # node:test — policy engine + socket client (fake NDJSON server)
 ```
+
+### Harness reporter ingest
+
+The one place prevention is actually possible: an agent harness reports each
+tool call BEFORE execution and can honor the verdict.
+
+- Transport: NDJSON request/response over a unix socket at the well-known
+  per-user path `$XDG_STATE_HOME/herdr-guard/reporter.sock` (default
+  `~/.local/state/herdr-guard/reporter.sock`) — deliberately NOT the
+  per-session herdr state dir, because reporters run inside agent processes
+  without herdr's plugin environment. Dir `0700`, socket `0600`. A stale
+  socket file is probed and reclaimed; a live one (another guard) is left
+  alone and logged. Override with `HERDR_GUARD_REPORTER_SOCKET`.
+- Request: `{v:1, kind:"tool_call", agent, tool, command, cwd?, session?}`.
+  Response: `{ok, verdict: "deny"|"warn"|"allow", enforcement, rule_id,
+  severity, reason}`. Mapping: interrupt→deny, alert→warn, audit/none→allow.
+- Matching runs with `paneType: "harness"` so `prompt_only` never gates a
+  raw reported command (there are no prompt glyphs to find). Project
+  overrides merge by the reported `cwd`. Multi-line commands take the
+  worst-line verdict.
+- Every match is audited (`source: "harness:<agent>"`, decision
+  `advise-deny` / `advise-warn` / `log-only`, `prevention: "unknown"` —
+  the guard cannot observe whether the harness honored the verdict).
+  Dedupe/rate-limit/notification-coalescing reuse the pane pipeline with a
+  synthetic `harness:<agent>` pane key; interrupt-tier is never suppressed.
+  `pause` yields `allow` + `enforcement: "paused"` while still auditing —
+  same contract as panes: pause stops actions, never the record.
+- Shipped reporter: `hooks/claude-code-pretooluse.mjs`, a zero-dependency
+  Claude Code PreToolUse hook. deny → `permissionDecision: "deny"`, warn →
+  `"ask"`, allow → silent. Strictly fail-open (500ms deadline, exit 0 on
+  any failure): a broken or absent guard must never break the harness.
+  Residual: killing the guard silences this path; pane-side tamper rules
+  make that loud.
 
 ### The Guard pane (watcher)
 

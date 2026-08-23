@@ -30,7 +30,49 @@ is not proof that the process received Ctrl+C or that execution changed.
 
 This is a text policy layer, not intent analysis. Shell obfuscation, detached
 nested multiplexers, popup panes, and a stopped/disabled guard are documented
-limitations. Use native agent hooks for authoritative tool-call enforcement.
+limitations. For authoritative tool-call enforcement inside agent harnesses,
+use the bundled harness reporter (below) or native agent hooks.
+
+## Harness reporter (pre-execution enforcement)
+
+Pane-watching can only *request* an interrupt after text renders. The
+reporter path inverts that: an agent harness reports each tool call to the
+guard **before execution** over a local unix socket
+(`~/.local/state/herdr-guard/reporter.sock`, dir `0700`) and receives a
+verdict from the same policy — `deny` (interrupt-tier), `warn` (alert-tier),
+or `allow`. Reported commands are matched raw (prompt-only gating does not
+apply) and audited with `source: "harness:<agent>"`; project overrides apply
+by the reported `cwd`.
+
+A ready-made Claude Code `PreToolUse` hook ships in
+`hooks/claude-code-pretooluse.mjs` — it maps `deny` to a blocked tool call
+and `warn` to a permission prompt. Wire it in `settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/herdr-guard/hooks/claude-code-pretooluse.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook is strictly fail-open: if the guard is not running, times out, or
+answers garbage, the tool call proceeds and nothing breaks. The guard cannot
+observe whether a harness honored a verdict, so audit entries still record
+`prevention: "unknown"`. Other harnesses can implement the same one-line
+NDJSON protocol: send
+`{"v":1,"kind":"tool_call","agent":"pi","tool":"shell","command":"...","cwd":"..."}`
+and read back `{"ok":true,"verdict":"deny","rule_id":"...","reason":"..."}`.
 
 ## Install
 

@@ -25,6 +25,7 @@ import {
 	severityRank,
 } from "./policy.mjs";
 import { renderDashboard } from "./render.mjs";
+import { ReporterServer, defaultReporterSocketPath } from "./reporter.mjs";
 
 const VERSION = "0.1.1";
 const REPLAY_WINDOW_MS = 500;
@@ -117,6 +118,7 @@ export class Guard {
 		this.overrideCache = new Map(); // cwd -> {mtimeMs, rules, appliedLogged}
 		this.notificationTimes = new Map(); // rule id -> last notification timestamp
 		this.matchesThisRun = 0;
+		this.reportsThisRun = 0;
 		this.loadWarningCount = 0;
 		this.connected = false;
 		this.timers = [];
@@ -859,6 +861,123 @@ export class Guard {
 		this.scheduleRender();
 	}
 
+	// --- harness reports --------------------------------------------------------
+
+	/**
+	 * A harness reporter (Claude Code hook, Pi extension) submits one tool call
+	 * BEFORE execution and receives an advisory verdict: deny (interrupt-tier),
+	 * warn (alert-tier), or allow. Unlike pane interrupts, a harness can honor
+	 * deny pre-execution — but the guard cannot observe whether it did, so
+	 * audit entries still record prevention "unknown". Reported command text is
+	 * the raw command (no prompt glyphs), so prompt_only never gates here:
+	 * matching runs with paneType "harness".
+	 */
+	handleReport(report) {
+		if (
+			!report ||
+			typeof report !== "object" ||
+			typeof report.command !== "string" ||
+			report.command.length === 0
+		) {
+			return { ok: false, error: "report requires a non-empty command string" };
+		}
+		const agent =
+			typeof report.agent === "string" && report.agent.length > 0
+				? report.agent.slice(0, 64)
+				: "unknown";
+		const tool =
+			typeof report.tool === "string" ? report.tool.slice(0, 64) : null;
+		const cwd = typeof report.cwd === "string" ? report.cwd : null;
+		const session =
+			typeof report.session === "string" ? report.session.slice(0, 128) : null;
+		const sourceKey = `harness:${agent}`;
+		const now = this.now();
+		this.reportsThisRun += 1;
+
+		let paused = this.config.enforcement === "paused";
+		if (paused && this.config.paused_until && now >= this.config.paused_until) {
+			paused = false;
+			this.resume("ttl-expired").catch(() => {});
+		}
+
+		const rules = this.rulesFor({ id: null, cwd, workspace: null });
+		const matches = scanText(report.command, rules, { paneType: "harness" });
+		let best = null;
+		for (const match of matches) {
+			if (
+				!best ||
+				severityRank(match.rule.severity) > severityRank(best.rule.severity)
+			)
+				best = match;
+		}
+
+		const verdictFor = (severity) =>
+			severity === "interrupt" ? "deny" : severity === "alert" ? "warn" : "allow";
+		const verdict = paused ? "allow" : verdictFor(best?.rule.severity);
+
+		for (const match of matches) {
+			const severity = match.rule.severity;
+			if (
+				this.dedupe.seen(
+					sourceKey,
+					match.line,
+					`report:${match.rule.id}`,
+					severity,
+					now,
+				)
+			)
+				continue;
+			if (severity !== "interrupt" && !this.rateLimiter.allow(sourceKey, now)) {
+				this.rateLimiter.suppress(sourceKey, match.rule.id, now);
+				continue;
+			}
+			this.audit.write({
+				ts: now,
+				pane_id: sourceKey,
+				rule_id: match.rule.id,
+				severity,
+				matched_text: match.line,
+				cwd,
+				agent,
+				tool,
+				session_id: session,
+				decision: paused
+					? "log-only-enforcement-paused"
+					: severity === "audit"
+						? "log-only"
+						: `advise-${verdictFor(severity)}`,
+				interrupt_request: "not-requested",
+				prevention: "unknown",
+				source: sourceKey,
+			});
+			this.bumpMatches();
+		}
+
+		if (!paused && best && severityRank(best.rule.severity) >= severityRank("alert")) {
+			const lastNotification = this.notificationTimes.get(best.rule.id);
+			if (
+				lastNotification === undefined ||
+				now - lastNotification >= COALESCE_FLUSH_MS
+			) {
+				this.notificationTimes.set(best.rule.id, now);
+				this.notify(
+					`herdr-guard: ${best.rule.severity} (${agent})`,
+					`${best.rule.reason}\n${best.line.slice(0, 120)}`,
+				).catch(() => {});
+			}
+		}
+		this.scheduleRender();
+
+		return {
+			ok: true,
+			verdict,
+			enforcement: paused ? "paused" : "active",
+			rule_id: best?.rule.id ?? null,
+			severity: best?.rule.severity ?? null,
+			reason: best?.rule.reason ?? null,
+		};
+	}
+
 	// --- sweep backstop ---------------------------------------------------------
 
 	sweepTick() {
@@ -1081,6 +1200,7 @@ export class Guard {
 			rulesLoaded: this.config.rules.length,
 			loadWarnings: this.loadWarningCount,
 			matchesThisRun: this.matchesThisRun,
+			reportsThisRun: this.reportsThisRun,
 			lastEntries: this.audit.tail(12),
 		};
 	}
@@ -1142,6 +1262,24 @@ async function main() {
 
 	await guard.start();
 
+	// Harness reporter ingest: agent hooks report tool calls pre-execution and
+	// receive advisory verdicts. Reporter unavailability is logged, never fatal
+	// — the pane watcher keeps running either way.
+	const reporter = new ReporterServer({
+		socketPath:
+			env.HERDR_GUARD_REPORTER_SOCKET ?? defaultReporterSocketPath(env),
+		handleReport: (report) => guard.handleReport(report),
+	});
+	try {
+		await reporter.start();
+		guard.logSystem("reporter-listening", reporter.socketPath);
+	} catch (error) {
+		guard.logSystem(
+			"reporter-unavailable",
+			`${reporter.socketPath}: ${error.message}`,
+		);
+	}
+
 	// Sibling-session awareness: other named sessions have their own sockets
 	// and are NOT guarded.
 	try {
@@ -1169,6 +1307,7 @@ async function main() {
 
 	process.stdout.on("resize", () => guard.scheduleRender());
 	const shutdown = () => {
+		reporter.close();
 		guard.stop();
 		process.exit(0);
 	};

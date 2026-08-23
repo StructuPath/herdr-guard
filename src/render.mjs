@@ -51,7 +51,10 @@ export function renderDashboard(state, { width = 80, height = 24 } = {}) {
 			(state.loadWarnings
 				? paint(YELLOW, ` (+${state.loadWarnings} load warnings)`)
 				: "") +
-			`   ${DIM}matches this run:${RESET} ${state.matchesThisRun}`,
+			`   ${DIM}matches this run:${RESET} ${state.matchesThisRun}` +
+			(state.reportsThisRun
+				? `   ${DIM}harness reports:${RESET} ${state.reportsThisRun}`
+				: ""),
 	);
 	lines.push("");
 	lines.push(` ${BOLD}recent activity${RESET}`);
