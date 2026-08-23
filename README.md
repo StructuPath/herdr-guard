@@ -144,7 +144,7 @@ fresh interrupt, and interrupt matches are intentionally never deduplicated.
 
 ## Development
 
-Requirements: Herdr 0.7.5+, Node.js 20+, and the platform lock utility (`lockf` on macOS or `flock` on Linux).
+Requirements: Herdr 0.7.5+, Node.js 20.10+ (JSON import attributes), and the platform lock utility (`lockf` on macOS or `flock` on Linux).
 
 ```sh
 npm test

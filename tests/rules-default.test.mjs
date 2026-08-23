@@ -109,7 +109,11 @@ const CASES = {
 		misses: ["$ git reset --soft HEAD~1", "$ git reset file.txt"],
 	},
 	"gh-repo-delete": {
-		hits: ["$ gh repo delete owner/repo --yes", "$ gh release delete v1.0.0"],
+		hits: [
+			"$ gh repo delete owner/repo --yes",
+			"$ gh repo delete",
+			"$ gh release delete v1.0.0",
+		],
 		misses: ["$ gh repo view owner/repo", "$ gh release list"],
 	},
 	sudo: {

@@ -126,7 +126,15 @@ async function main() {
 	else if (verdict.verdict === "warn") emitDecision("ask", verdict);
 }
 
+// Success either way (fail-open), but let stdout drain naturally: a forced
+// process.exit() can truncate the decision JSON before Claude Code reads it.
 main().then(
-	() => process.exit(0),
-	() => process.exit(0),
+	() => {
+		process.exitCode = 0;
+		process.stdin.destroy();
+	},
+	() => {
+		process.exitCode = 0;
+		process.stdin.destroy();
+	},
 );

@@ -60,7 +60,7 @@ and a process with the user's privileges can still stop the guard (the hook
 fails open by design; tampering attempts are alert rules).
 
 You can try the tagged release without an account or service. It requires
-Herdr 0.7.5+, Node.js 20+, and macOS or Linux:
+Herdr 0.7.5+, Node.js 20.10+, and macOS or Linux:
 
 ```sh
 herdr plugin install StructuPath/herdr-guard --ref v0.2.0

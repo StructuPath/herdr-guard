@@ -19,7 +19,7 @@
   `source: "harness:<agent>"`. Pause allows but still audits. The dashboard
   shows a harness-reports counter.
 
-### Default policy hardening (26 → 54 rules)
+### Default policy hardening (26 → 52 rules)
 
 - New interrupt-tier rules: device wipes (`wipefs`/`blkdiscard`/`shred` on
   devices), shell redirects onto block devices, recursive `chmod`/`chown` on

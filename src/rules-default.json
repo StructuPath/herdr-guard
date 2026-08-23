@@ -112,7 +112,7 @@
       "id": "gh-repo-delete",
       "severity": "alert",
       "match": "regex",
-      "pattern": "gh\\s+repo\\s+(delete|archive)\\s|gh\\s+release\\s+delete\\s",
+      "pattern": "gh\\s+repo\\s+(delete|archive)(\\s|$)|gh\\s+release\\s+delete(\\s|$)",
       "reason": "Deleting or archiving a GitHub repository or release"
     },
     {

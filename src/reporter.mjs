@@ -23,6 +23,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export const MAX_LINE_BYTES = 256 * 1024;
 export const CONNECTION_IDLE_TIMEOUT_MS = 10_000;
@@ -82,10 +83,11 @@ function processAlive(pid) {
 }
 
 export class ReporterServer {
-	constructor({ socketPath, handleReport }) {
+	constructor({ socketPath, handleReport, onError = null }) {
 		this.socketPath = socketPath;
 		this.lockPath = `${socketPath}.lock`;
 		this.handleReport = handleReport;
+		this.onError = onError;
 		this.server = null;
 		this.owned = false;
 		this.lockHeld = false;
@@ -107,6 +109,10 @@ export class ReporterServer {
 				this.server.once("error", reject);
 				this.server.listen(this.socketPath, () => {
 					this.server.removeListener("error", reject);
+					// Keep a listener for the server's whole life: an unhandled
+					// 'error' event (e.g. EMFILE on accept) would crash the pane
+					// watcher, and reporter problems must never be fatal to it.
+					this.server.on("error", (error) => this.onError?.(error));
 					resolve();
 				});
 			});
@@ -164,12 +170,16 @@ export class ReporterServer {
 
 	onConnection(connection) {
 		let buffer = "";
+		// Chunk boundaries are arbitrary: a multi-byte UTF-8 sequence split
+		// across chunks must not decode to replacement characters, or the
+		// policy engine would scan a corrupted command.
+		const decoder = new StringDecoder("utf8");
 		connection.setTimeout(CONNECTION_IDLE_TIMEOUT_MS, () =>
 			connection.destroy(),
 		);
 		connection.on("error", () => {});
 		connection.on("data", (chunk) => {
-			buffer += chunk.toString("utf8");
+			buffer += decoder.write(chunk);
 			if (Buffer.byteLength(buffer) > MAX_LINE_BYTES) {
 				connection.write(
 					`${JSON.stringify({ ok: false, error: "request too large" })}\n`,

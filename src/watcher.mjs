@@ -1272,6 +1272,7 @@ async function main() {
 			? env.HERDR_GUARD_REPORTER_SOCKET
 			: defaultReporterSocketPath(env),
 		handleReport: (report) => guard.handleReport(report),
+		onError: (error) => guard.logSystem("reporter-error", error.message),
 	});
 	try {
 		await reporter.start();
