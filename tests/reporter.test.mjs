@@ -238,16 +238,50 @@ test("ReporterServer serves verdicts over the unix socket and reclaims stale fil
 		});
 		assert.equal(malformed.ok, false);
 
-		// A second guard must refuse to fight over a live socket.
+		// A second guard must refuse to fight over a live socket — and its
+		// shutdown must NOT delete the surviving guard's socket or lock.
 		const second = new ReporterServer({
 			socketPath,
 			handleReport: () => ({ ok: true, verdict: "allow" }),
 		});
 		await assert.rejects(() => second.start(), /already serving/);
+		second.close();
+		assert.equal(await probeSocket(socketPath), "live");
+		const stillWorks = await ask(socketPath, {
+			agent: "pi",
+			command: "rm -rf /",
+		});
+		assert.equal(stillWorks.verdict, "deny");
 	} finally {
 		server.close();
 	}
 	assert.equal(fs.existsSync(socketPath), false);
+	assert.equal(fs.existsSync(`${socketPath}.lock`), false);
+});
+
+test("ReporterServer reclaims a lock left by a dead process but honors a live one", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-reporter-lock-"));
+	const socketPath = path.join(dir, "reporter.sock");
+	// A crashed guard leaves a lock naming a pid that no longer exists.
+	fs.writeFileSync(`${socketPath}.lock`, "999999999");
+	const server = new ReporterServer({
+		socketPath,
+		handleReport: () => ({ ok: true, verdict: "allow" }),
+	});
+	await server.start();
+	try {
+		assert.equal(await probeSocket(socketPath), "live");
+		// A lock naming a live pid (ours) blocks a would-be claimant even if
+		// its socket probe raced to "stale".
+		const contender = new ReporterServer({
+			socketPath: path.join(dir, "other.sock"),
+			handleReport: () => ({ ok: true, verdict: "allow" }),
+		});
+		fs.writeFileSync(`${contender.socketPath}.lock`, String(process.pid));
+		await assert.rejects(() => contender.start(), /holds/);
+	} finally {
+		server.close();
+	}
 });
 
 function runHook(input, env = {}) {

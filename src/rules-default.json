@@ -28,7 +28,7 @@
       "id": "wipe-device",
       "severity": "interrupt",
       "match": "regex",
-      "pattern": "(wipefs|blkdiscard)\\s|shred\\s+[^\\n]*/dev/",
+      "pattern": "wipefs\\s+[^\\n]*(-a|--all)[^\\n]*/dev/|(blkdiscard|shred)\\s+[^\\n]*/dev/",
       "reason": "Wiping or discarding a block device"
     },
     {
@@ -63,7 +63,7 @@
       "id": "crontab-remove",
       "severity": "interrupt",
       "match": "regex",
-      "pattern": "crontab\\s+-(ir|ri|r)(\\s|$)",
+      "pattern": "crontab\\s+([^\\s]+\\s+)*-(ir|ri|r)(\\s|$)",
       "reason": "crontab -r silently deletes every scheduled job"
     },
     {
@@ -182,14 +182,14 @@
       "id": "gcloud-resource-delete",
       "severity": "alert",
       "match": "regex",
-      "pattern": "gcloud\\s+[^\\n]*(compute|sql|container|storage|run|functions|projects)\\s+[^\\n]*\\bdelete\\b",
+      "pattern": "gcloud\\s+[^\\n|;&]*(compute|sql|container|storage|run|functions|projects)\\s+[^\\n|;&]*\\bdelete\\b",
       "reason": "Deleting Google Cloud infrastructure"
     },
     {
       "id": "az-resource-delete",
       "severity": "alert",
       "match": "regex",
-      "pattern": "az\\s+(group|vm|aks|webapp|storage\\s+account|sql\\s+(db|server)|keyvault)\\s+[^\\n]*\\bdelete\\b",
+      "pattern": "az\\s+(group|vm|aks|webapp|storage\\s+account|sql\\s+(db|server)|keyvault)\\s+[^\\n|;&]*\\bdelete\\b",
       "reason": "Deleting Azure infrastructure"
     },
     {
@@ -204,7 +204,7 @@
       "severity": "alert",
       "match": "regex",
       "prompt_only": true,
-      "pattern": "(DROP|drop)\\s+(TABLE|table|DATABASE|database|SCHEMA|schema)\\s|(TRUNCATE|truncate)\\s+(TABLE|table)\\s|(dropdb|dropuser)\\s",
+      "pattern": "[Dd][Rr][Oo][Pp]\\s+([Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa])\\s|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]\\s+[Tt][Aa][Bb][Ll][Ee]\\s|(dropdb|dropuser)\\s",
       "reason": "Dropping or truncating database objects"
     },
     {
@@ -239,7 +239,7 @@
       "id": "exfil-curl-upload",
       "severity": "alert",
       "match": "regex",
-      "pattern": "curl\\s+[^\\n]*((-T|--upload-file)\\s+[^\\n]*(\\.env\\b|\\.ssh/|\\.aws/|credentials|/etc/shadow)|(-d|--data[a-z-]*|-F\\s+[^\\s=]+=)\\s*[\"']?@[^\\n]*(\\.env\\b|\\.ssh/|\\.aws/|credentials|/etc/shadow))",
+      "pattern": "curl\\s+[^\\n]*((-T|--upload-file)\\s+[\"']?[^\\s\"']*(\\.env\\b|\\.ssh/|\\.aws/|credentials|/etc/shadow)|(-d|--data[a-z-]*|-F\\s+[^\\s=]+=)\\s*[\"']?@[^\\s\"']*(\\.env\\b|\\.ssh/|\\.aws/|credentials|/etc/shadow))",
       "reason": "Uploading local secret material with curl"
     },
     {
@@ -281,7 +281,7 @@
       "id": "evasion-setsid-at",
       "severity": "alert",
       "match": "regex",
-      "pattern": "setsid\\s+[^\\s]|\\|\\s*at\\s+now\\b|echo\\s+[^\\n]*\\|\\s*batch\\b",
+      "pattern": "(^|[$❯%╰─]|&&|;|\\|\\|)\\s*setsid\\s+[^\\s]|\\|\\s*at\\s+now\\b|echo\\s+[^\\n]*\\|\\s*batch\\b",
       "reason": "Scheduling or detaching execution outside the watched shell"
     },
     {

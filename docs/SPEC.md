@@ -56,9 +56,14 @@ tool call BEFORE execution and can honor the verdict.
   per-user path `$XDG_STATE_HOME/herdr-guard/reporter.sock` (default
   `~/.local/state/herdr-guard/reporter.sock`) — deliberately NOT the
   per-session herdr state dir, because reporters run inside agent processes
-  without herdr's plugin environment. Dir `0700`, socket `0600`. A stale
-  socket file is probed and reclaimed; a live one (another guard) is left
-  alone and logged. Override with `HERDR_GUARD_REPORTER_SOCKET`.
+  without herdr's plugin environment. Dir `0700` (created only if missing —
+  a user-overridden path never gets its existing parent chmodded), socket
+  `0600`. Claiming is race-safe: an atomic (O_EXCL) pid lock file gates the
+  unlink-and-bind, a dead holder's lock is reclaimed, and `close()` removes
+  only a socket/lock the instance owns — a losing guard's shutdown can never
+  delete the surviving guard's live socket. A live socket (another guard) is
+  left alone and logged. Override with `HERDR_GUARD_REPORTER_SOCKET` (empty
+  means unset, on both the guard and hook sides).
 - Request: `{v:1, kind:"tool_call", agent, tool, command, cwd?, session?}`.
   Response: `{ok, verdict: "deny"|"warn"|"allow", enforcement, rule_id,
   severity, reason}`. Mapping: interrupt→deny, alert→warn, audit/none→allow.

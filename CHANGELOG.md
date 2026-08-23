@@ -38,6 +38,19 @@
 - New `tests/rules-default.test.mjs`: every shipped rule carries canonical
   hits plus near-miss false-positive guards, with completeness enforced.
 
+### Review hardening (post-review fixes, same release)
+
+- Reporter lifecycle: socket claiming is now gated by an atomic pid lock
+  (concurrent starters cannot orphan each other), `close()` only removes a
+  socket/lock the instance owns, and a pre-existing parent directory of a
+  user-overridden socket path is never chmodded.
+- Rule fixes: `crontab -u <user> -r` now interrupts; mixed-case SQL
+  `Drop Table` now alerts; `wipefs` without erase flags, `grep setsid`,
+  `gcloud ... list | grep delete`, and `curl -d @file` posts to URLs merely
+  containing "credentials" no longer false-positive.
+- Guard and hook now agree that an empty `HERDR_GUARD_REPORTER_SOCKET`
+  means unset.
+
 ## 0.1.1
 
 - Transport hotfix: Herdr socket lifecycle repair, watcher lifecycle and

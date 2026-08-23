@@ -12,6 +12,12 @@
 // herdr's plugin environment. Directory 0700, socket 0600. Everything is
 // fail-open by design on the reporter side; on the guard side an unreachable
 // reporter socket is logged and visible, never fatal to the pane watcher.
+//
+// Ownership rules (two guards must never fight over the rendezvous point):
+// a pid lock file is claimed atomically (O_EXCL) before binding, so
+// concurrent starters cannot both unlink-and-listen; close() only removes
+// the socket and lock this instance actually owns, so a loser's shutdown
+// can never delete the surviving guard's live socket.
 
 import fs from "node:fs";
 import net from "node:net";
@@ -48,43 +54,112 @@ export function probeSocket(socketPath) {
 	});
 }
 
+/**
+ * Create the socket's parent directory 0700 only when it does not already
+ * exist. The path is user-overridable, so never chmod a pre-existing
+ * directory — pointing the socket into $HOME or /tmp must not change their
+ * permissions (or fail on EPERM).
+ */
+function ensureSocketDir(socketPath) {
+	const dir = path.dirname(socketPath);
+	const created = fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	if (created) {
+		try {
+			fs.chmodSync(dir, 0o700);
+		} catch {
+			/* best effort — the mkdir mode already applied on most platforms */
+		}
+	}
+}
+
+function processAlive(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return error.code === "EPERM";
+	}
+}
+
 export class ReporterServer {
 	constructor({ socketPath, handleReport }) {
 		this.socketPath = socketPath;
+		this.lockPath = `${socketPath}.lock`;
 		this.handleReport = handleReport;
 		this.server = null;
+		this.owned = false;
+		this.lockHeld = false;
 	}
 
 	async start() {
-		const state = await probeSocket(this.socketPath);
-		if (state === "live") {
-			throw new Error(
-				`another guard is already serving ${this.socketPath}`,
-			);
+		if ((await probeSocket(this.socketPath)) === "live") {
+			throw new Error(`another guard is already serving ${this.socketPath}`);
 		}
-		fs.mkdirSync(path.dirname(this.socketPath), {
-			recursive: true,
-			mode: 0o700,
-		});
-		fs.chmodSync(path.dirname(this.socketPath), 0o700);
-		if (state === "stale") fs.rmSync(this.socketPath, { force: true });
-
-		this.server = net.createServer((connection) =>
-			this.onConnection(connection),
-		);
-		await new Promise((resolve, reject) => {
-			this.server.once("error", reject);
-			this.server.listen(this.socketPath, () => {
-				this.server.removeListener("error", reject);
-				resolve();
-			});
-		});
+		ensureSocketDir(this.socketPath);
+		this.claimLock();
 		try {
-			fs.chmodSync(this.socketPath, 0o600);
-		} catch {
-			/* some platforms ignore socket modes; the 0700 dir is the gate */
+			// Only the lock holder may reclaim a stale socket file and bind.
+			fs.rmSync(this.socketPath, { force: true });
+			this.server = net.createServer((connection) =>
+				this.onConnection(connection),
+			);
+			await new Promise((resolve, reject) => {
+				this.server.once("error", reject);
+				this.server.listen(this.socketPath, () => {
+					this.server.removeListener("error", reject);
+					resolve();
+				});
+			});
+			try {
+				fs.chmodSync(this.socketPath, 0o600);
+			} catch {
+				/* some platforms ignore socket modes; the 0700 dir is the gate */
+			}
+			this.owned = true;
+			this.server.unref?.();
+		} catch (error) {
+			this.server?.close();
+			this.server = null;
+			this.releaseLock();
+			throw error;
 		}
-		this.server.unref?.();
+	}
+
+	/** Atomic (O_EXCL) pid-lock claim; a dead holder's lock is reclaimed. */
+	claimLock() {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				const descriptor = fs.openSync(this.lockPath, "wx", 0o600);
+				fs.writeSync(descriptor, String(process.pid));
+				fs.closeSync(descriptor);
+				this.lockHeld = true;
+				return;
+			} catch (error) {
+				if (error.code !== "EEXIST") throw error;
+				let holder = NaN;
+				try {
+					holder = Number.parseInt(
+						fs.readFileSync(this.lockPath, "utf8"),
+						10,
+					);
+				} catch {
+					/* unreadable lock — treat as stale below */
+				}
+				if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) {
+					throw new Error(
+						`another guard (pid ${holder}) holds ${this.lockPath}`,
+					);
+				}
+				fs.rmSync(this.lockPath, { force: true });
+			}
+		}
+		throw new Error(`could not claim ${this.lockPath}`);
+	}
+
+	releaseLock() {
+		if (!this.lockHeld) return;
+		this.lockHeld = false;
+		fs.rmSync(this.lockPath, { force: true });
 	}
 
 	onConnection(connection) {
@@ -124,9 +199,14 @@ export class ReporterServer {
 			connection.write(`${JSON.stringify(response)}\n`);
 	}
 
+	/** Removes only what this instance owns — never a surviving guard's socket. */
 	close() {
 		this.server?.close();
 		this.server = null;
-		fs.rmSync(this.socketPath, { force: true });
+		if (this.owned) {
+			this.owned = false;
+			fs.rmSync(this.socketPath, { force: true });
+		}
+		this.releaseLock();
 	}
 }

@@ -1265,9 +1265,12 @@ async function main() {
 	// Harness reporter ingest: agent hooks report tool calls pre-execution and
 	// receive advisory verdicts. Reporter unavailability is logged, never fatal
 	// — the pane watcher keeps running either way.
+	// Empty means unset — the hook treats it the same way, so both sides
+	// always resolve the identical rendezvous path.
 	const reporter = new ReporterServer({
-		socketPath:
-			env.HERDR_GUARD_REPORTER_SOCKET ?? defaultReporterSocketPath(env),
+		socketPath: env.HERDR_GUARD_REPORTER_SOCKET?.length
+			? env.HERDR_GUARD_REPORTER_SOCKET
+			: defaultReporterSocketPath(env),
 		handleReport: (report) => guard.handleReport(report),
 	});
 	try {

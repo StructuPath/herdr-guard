@@ -37,8 +37,16 @@ const CASES = {
 		misses: ["$ echo mkfsx"],
 	},
 	"wipe-device": {
-		hits: ["$ wipefs -a /dev/sdb", "$ shred -n 3 /dev/sda"],
-		misses: ["$ shred old-notes.txt"],
+		hits: [
+			"$ wipefs -a /dev/sdb",
+			"$ blkdiscard /dev/nvme0n1",
+			"$ shred -n 3 /dev/sda",
+		],
+		misses: [
+			"$ shred old-notes.txt",
+			"$ wipefs /dev/sdb",
+			"$ man wipefs",
+		],
 	},
 	"redirect-to-device": {
 		hits: ["$ cat disk.img > /dev/sda", "$ echo x >/dev/nvme0n1"],
@@ -61,7 +69,7 @@ const CASES = {
 		misses: ["$ :() { echo hi; }"],
 	},
 	"crontab-remove": {
-		hits: ["$ crontab -r", "$ crontab -ir"],
+		hits: ["$ crontab -r", "$ crontab -ir", "$ crontab -u deploy -r"],
 		misses: ["$ crontab -l", "$ crontab -e", "$ crontab jobs.cron"],
 	},
 	"terraform-destroy": {
@@ -167,7 +175,11 @@ const CASES = {
 			"$ gcloud compute instances delete vm-1",
 			"$ gcloud projects delete my-project",
 		],
-		misses: ["$ gcloud compute instances list", "$ gcloud projects list"],
+		misses: [
+			"$ gcloud compute instances list",
+			"$ gcloud projects list",
+			"$ gcloud compute images list | grep delete",
+		],
 	},
 	"az-resource-delete": {
 		hits: ["$ az group delete -n prod-rg", "$ az vm delete -n vm1 -g rg"],
@@ -185,6 +197,7 @@ const CASES = {
 		hits: [
 			"$ psql -c 'DROP TABLE users;'",
 			'$ mysql -e "drop database prod"',
+			"$ psql -c 'Drop Table users;'",
 			"$ dropdb production",
 		],
 		misses: ["$ psql -c 'SELECT * FROM users;'", "$ createdb staging"],
@@ -218,7 +231,8 @@ const CASES = {
 		],
 		misses: [
 			"$ curl -d '{}' https://api.example.com/credentials/rotate",
-			"$ curl -T build.tgz https://uploads.example",
+			"$ curl -d @payload.json https://api.example.com/credentials/rotate",
+			"$ curl -T build.tgz https://uploads.example/aws/credentials-api",
 			"$ curl https://api.example.com/user",
 		],
 	},
@@ -244,7 +258,12 @@ const CASES = {
 	},
 	"evasion-setsid-at": {
 		hits: ["$ setsid ./run.sh", "$ echo 'do-it' | at now"],
-		misses: ["$ ls | attr -g x", "$ man setsid"],
+		misses: [
+			"$ ls | attr -g x",
+			"$ man setsid",
+			"$ grep setsid daemon.c",
+			"$ grep -r setsid src/",
+		],
 	},
 	"evasion-base64-shell": {
 		hits: ["$ echo cm0gLXJmIC8= | base64 -d | sh"],
