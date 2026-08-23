@@ -1,4 +1,4 @@
-# herdr-guard — Spec (v1, runtime 0.1.1)
+# herdr-guard — Spec (v1, runtime 0.2.0)
 
 Cross-agent command policy layer for [Herdr](https://herdr.dev). Watches herdr
 panes for dangerous commands, then audits, alerts, or interrupts — from one
@@ -21,8 +21,9 @@ The guard matches command **text**, not command **intent**. Semantic
 obfuscation (`base64 -d | sh`, `r''m`, `$x -rf`, python `shutil.rmtree`)
 defeats content matching; obfuscation-*indicator* alert rules make attempts
 loud but can't stop them. Harness-level hooks remain the enforcement point
-inside TUI agents; v2 path is tiny harness reporters (Pi extension / Claude
-Code hook) POSTing tool calls to the guard for unified audit+policy.
+inside TUI agents — and the guard now ships that path: harness reporters
+(see "Harness reporter ingest" below) submit tool calls pre-execution for a
+unified audit + policy verdict the harness can enforce.
 
 ## Architecture
 
@@ -40,8 +41,49 @@ herdr-guard/
     rules-default.json    # shipped default policy (seeded into config dir)
     audit.mjs             # JSONL append, redaction, sanitization, partitioned rotation
     render.mjs            # dashboard rendering (ANSI, sanitized)
+    reporter.mjs          # harness reporter ingest: NDJSON unix-socket server
+  hooks/
+    claude-code-pretooluse.mjs  # shipped Claude Code PreToolUse reporter (fail-open)
   tests/*.test.mjs        # node:test — policy engine + socket client (fake NDJSON server)
 ```
+
+### Harness reporter ingest
+
+The one place prevention is actually possible: an agent harness reports each
+tool call BEFORE execution and can honor the verdict.
+
+- Transport: NDJSON request/response over a unix socket at the well-known
+  per-user path `$XDG_STATE_HOME/herdr-guard/reporter.sock` (default
+  `~/.local/state/herdr-guard/reporter.sock`) — deliberately NOT the
+  per-session herdr state dir, because reporters run inside agent processes
+  without herdr's plugin environment. Dir `0700` (created only if missing —
+  a user-overridden path never gets its existing parent chmodded), socket
+  `0600`. Claiming is race-safe: an atomic (O_EXCL) pid lock file gates the
+  unlink-and-bind, a dead holder's lock is reclaimed, and `close()` removes
+  only a socket/lock the instance owns — a losing guard's shutdown can never
+  delete the surviving guard's live socket. A live socket (another guard) is
+  left alone and logged. Override with `HERDR_GUARD_REPORTER_SOCKET` (empty
+  means unset, on both the guard and hook sides).
+- Request: `{v:1, kind:"tool_call", agent, tool, command, cwd?, session?}`.
+  Response: `{ok, verdict: "deny"|"warn"|"allow", enforcement, rule_id,
+  severity, reason}`. Mapping: interrupt→deny, alert→warn, audit/none→allow.
+- Matching runs with `paneType: "harness"` so `prompt_only` never gates a
+  raw reported command (there are no prompt glyphs to find). Project
+  overrides merge by the reported `cwd`. Multi-line commands take the
+  worst-line verdict.
+- Every match is audited (`source: "harness:<agent>"`, decision
+  `advise-deny` / `advise-warn` / `log-only`, `prevention: "unknown"` —
+  the guard cannot observe whether the harness honored the verdict).
+  Dedupe/rate-limit/notification-coalescing reuse the pane pipeline with a
+  synthetic `harness:<agent>` pane key; interrupt-tier is never suppressed.
+  `pause` yields `allow` + `enforcement: "paused"` while still auditing —
+  same contract as panes: pause stops actions, never the record.
+- Shipped reporter: `hooks/claude-code-pretooluse.mjs`, a zero-dependency
+  Claude Code PreToolUse hook. deny → `permissionDecision: "deny"`, warn →
+  `"ask"`, allow → silent. Strictly fail-open (500ms deadline, exit 0 on
+  any failure): a broken or absent guard must never break the harness.
+  Residual: killing the guard silences this path; pane-side tamper rules
+  make that loud.
 
 ### The Guard pane (watcher)
 
@@ -158,17 +200,32 @@ One long-running `[[panes]]` entrypoint (`placement = "split"`). Lifecycle:
   validator at load: cap length 512, reject backrefs, reject unparseable
   regex (log + notify on rejection).
 - **Default rules** (from pi damage-control, pi-library sp-damage-control
-  - safe-mode, red-team additions):
+  - safe-mode, red-team additions; every rule has hit/near-miss coverage in
+  `tests/rules-default.test.mjs`):
   - *interrupt*: `rm -rf` rootish paths, `dd of=/dev`, `mkfs`,
-    `git push --force` / `reset --hard` (alert or interrupt — ship alert),
-    `terraform destroy`, `kubectl delete` prod-ish contexts
-  - *alert*: `sudo`, `curl|sh` / `wget|sh`, `cat .env*` / `security
-    find-generic-password -w`, `npm publish`, `aws s3 rm|sync --delete`,
-    `docker system prune -a`, exfil (`scp|rsync` of `~/.ssh`, `~/.aws`,
-    `~/fsw-bid-data`), **evasion indicators**: `stty -echo`, `stty raw`,
-    `tmux.*(-d|-b)`, `screen -dm`, `disown`, `base64 -d` piped to shell,
-    `eval $(`, `sh -c "$(`
-  - *audit*: everything above plus git destructive variants
+    `wipefs`/`blkdiscard`/`shred` on devices, shell redirects onto block
+    devices, recursive `chmod`/`chown` on rootish paths, `find / -delete`,
+    fork bombs, `crontab -r`, `terraform destroy`, `kubectl delete`
+    prod-ish contexts
+  - *alert*: `sudo`, `curl|sh` / `wget|sh`, `cat .env*` / SSH-key and
+    credential-store reads / `security find-generic-password -w`,
+    `npm publish` and the wider publish family (`cargo publish`,
+    `twine upload`, `gem push`, `yarn`/`pnpm publish`), `aws s3
+    rm|rb|sync --delete`, AWS/GCP/Azure resource deletion, PaaS app
+    destruction, DB `DROP`/`TRUNCATE` (prompt-only), `kubectl delete
+    namespace` / `helm uninstall`, `docker system prune -a` and volume
+    removal, `git push --force|--mirror|--delete` (force-with-lease is
+    audit-only), `gh repo delete`, firewall disabling, exfil (`scp|rsync`
+    of `~/.ssh`, `~/.aws`, `~/fsw-bid-data`; `curl` uploads of secret
+    material), **guard tampering** (`herdr plugin disable`, killing
+    Herdr, deleting guard rules/audit files), **evasion indicators**:
+    `stty -echo`, `stty raw`, `tmux.*(-d|-b)`, `screen -dm`, `disown`,
+    `setsid`, `| at now`, history clearing (`history -c`,
+    `HISTFILE=/dev/null`, `unset HISTFILE`), `base64 -d` / `xxd -r` /
+    `printf '\x..'` piped to shell, `eval $(`, `sh -c "$(`
+  - *audit*: git destructive variants (`clean -f`, `checkout -- .`,
+    `branch -D`, `filter-branch`/`filter-repo`, `stash drop|clear`,
+    `push --force-with-lease`), generic `rm -rf`
 - **Project override**: `<workspace cwd>/.herdr-guard.json`, merged lazily
   per pane cwd.
   - May **add** rules (`substring` only — repo-controlled regex never

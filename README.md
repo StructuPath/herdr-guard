@@ -4,7 +4,7 @@ Cross-agent command policy for [Herdr](https://herdr.dev): watch every pane,
 audit risky commands, notify you, and best-effort interrupt dangerous shell
 input.
 
-Current runtime and manifest release: **0.1.1**.
+Current runtime and manifest release: **0.2.0**.
 
 **Docs:** the [StructuPath Herdr Plugins wiki](https://github.com/StructuPath/herdr-browser/wiki)
 is the practical guide to this plugin and its three siblings (Browser, Swarm,
@@ -30,7 +30,49 @@ is not proof that the process received Ctrl+C or that execution changed.
 
 This is a text policy layer, not intent analysis. Shell obfuscation, detached
 nested multiplexers, popup panes, and a stopped/disabled guard are documented
-limitations. Use native agent hooks for authoritative tool-call enforcement.
+limitations. For authoritative tool-call enforcement inside agent harnesses,
+use the bundled harness reporter (below) or native agent hooks.
+
+## Harness reporter (pre-execution enforcement)
+
+Pane-watching can only *request* an interrupt after text renders. The
+reporter path inverts that: an agent harness reports each tool call to the
+guard **before execution** over a local unix socket
+(`~/.local/state/herdr-guard/reporter.sock`, dir `0700`) and receives a
+verdict from the same policy — `deny` (interrupt-tier), `warn` (alert-tier),
+or `allow`. Reported commands are matched raw (prompt-only gating does not
+apply) and audited with `source: "harness:<agent>"`; project overrides apply
+by the reported `cwd`.
+
+A ready-made Claude Code `PreToolUse` hook ships in
+`hooks/claude-code-pretooluse.mjs` — it maps `deny` to a blocked tool call
+and `warn` to a permission prompt. Wire it in `settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/herdr-guard/hooks/claude-code-pretooluse.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook is strictly fail-open: if the guard is not running, times out, or
+answers garbage, the tool call proceeds and nothing breaks. The guard cannot
+observe whether a harness honored a verdict, so audit entries still record
+`prevention: "unknown"`. Other harnesses can implement the same one-line
+NDJSON protocol: send
+`{"v":1,"kind":"tool_call","agent":"pi","tool":"shell","command":"...","cwd":"..."}`
+and read back `{"ok":true,"verdict":"deny","rule_id":"...","reason":"..."}`.
 
 ## Install
 
@@ -72,10 +114,18 @@ rules unless the user explicitly enables `allow_project_override` in the
 global configuration. Configuration writes are atomic and malformed updates
 keep the last known-good policy.
 
-The shipped policy covers destructive filesystem/Git/infrastructure commands,
-secret-file reads, publishing, data exfiltration, and evasion indicators such
-as `stty -echo`, detached tmux/screen, `disown`, base64-to-shell, and eval
-subshells. Review the defaults before enabling interrupt rules in production.
+The shipped policy covers destructive filesystem/Git/infrastructure commands
+(including cloud-resource deletion on AWS/GCP/Azure, PaaS app destruction,
+Kubernetes/Helm teardown, and database `DROP`/`TRUNCATE` statements),
+secret-file and credential reads, package publishing, data exfiltration
+(`scp`/`rsync` of key directories, `curl` uploads of secret material), guard
+tampering (`herdr plugin disable`, killing Herdr, deleting rules or audit
+files), and evasion indicators such as `stty -echo`, detached tmux/screen,
+`disown`/`setsid`, history clearing, and base64/hex-to-shell decoding. Every
+rule ships with hit and near-miss tests (`tests/rules-default.test.mjs`);
+`git push --force-with-lease`, `id_rsa.pub` reads, and similar benign
+neighbors are explicitly kept silent. Review the defaults before enabling
+interrupt rules in production.
 
 ## Security and trust
 
@@ -94,7 +144,7 @@ fresh interrupt, and interrupt matches are intentionally never deduplicated.
 
 ## Development
 
-Requirements: Herdr 0.7.5+, Node.js 20+, and the platform lock utility (`lockf` on macOS or `flock` on Linux).
+Requirements: Herdr 0.7.5+, Node.js 20.10+ (JSON import attributes), and the platform lock utility (`lockf` on macOS or `flock` on Linux).
 
 ```sh
 npm test
@@ -114,7 +164,8 @@ vhs assets/demo.tape
 
 ## Future work
 
-- Harness reporters for Pi/Claude Code tool calls.
+- Additional harness reporters (Pi extension, Codex) speaking the shipped
+  reporter protocol.
 - Shell pre-exec approval flow.
 - Popup visibility in Herdr's event/API surface.
 - Per-plugin socket ACLs or read-only tokens.

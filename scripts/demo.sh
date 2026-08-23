@@ -21,7 +21,7 @@ RESULT=$(
 IFS=$'\t' read -r SEVERITY RULE_ID REASON <<<"$RESULT"
 
 printf '\n'
-printf '  \033[1;38;5;75mherdr-guard\033[0m \033[2mv0.1.1\033[0m    \033[1;32m● ACTIVE\033[0m\n'
+printf '  \033[1;38;5;75mherdr-guard\033[0m \033[2mv0.2.0\033[0m    \033[1;32m● ACTIVE\033[0m\n'
 printf '  \033[2mCross-agent command policy for Herdr\033[0m\n'
 
 case "$SEVERITY" in
@@ -32,6 +32,7 @@ interrupt)
 	DECISION='request-interrupt (classified shell panes only)'
 	REQUEST='not-requested (dry run; runtime records accepted or failed)'
 	AUDIT='Would write with secret redaction at runtime'
+	HARNESS='deny — a wired Claude Code hook refuses the tool call pre-execution'
 	OUTCOME='Runtime would request Ctrl+C in a classified shell; prevention is not observed.'
 	;;
 alert)
@@ -41,6 +42,7 @@ alert)
 	DECISION='request-notification'
 	REQUEST='not-requested'
 	AUDIT='Would write with secret redaction at runtime'
+	HARNESS='warn — a wired Claude Code hook asks for permission first'
 	OUTCOME='Runtime would request a notification and would not request Ctrl+C.'
 	;;
 audit)
@@ -50,6 +52,7 @@ audit)
 	DECISION='log-only'
 	REQUEST='not-requested'
 	AUDIT='Would write with secret redaction at runtime'
+	HARNESS='allow — logged only'
 	OUTCOME='Runtime would log this match only.'
 	;;
 *)
@@ -61,6 +64,7 @@ audit)
 	DECISION='none'
 	REQUEST='not-requested'
 	AUDIT='No match audit would be written'
+	HARNESS='allow'
 	OUTCOME='No policy rule matched; this dry run makes no safety claim.'
 	;;
 esac
@@ -76,6 +80,7 @@ printf '  \033[2mReason\033[0m              %s\n' "$REASON_DISPLAY"
 printf '  \033[2mDecision\033[0m            %s\n' "$DECISION"
 printf '  \033[2mInterrupt request\033[0m    %s\n' "$REQUEST"
 printf '  \033[2mPrevention\033[0m          unknown\n'
+printf '  \033[2mHarness verdict\033[0m     %s\n' "$HARNESS"
 printf '  \033[2mAudit\033[0m               %s\n' "$AUDIT"
 printf '\n'
 printf '  \033[1m%s\033[0m\n' "$OUTCOME"

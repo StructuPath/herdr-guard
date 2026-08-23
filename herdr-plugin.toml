@@ -1,6 +1,6 @@
 id = "structupath.guard"
 name = "Guard"
-version = "0.1.1"
+version = "0.2.0"
 min_herdr_version = "0.7.5"
 description = "Cross-agent command policy: audit, alert, and best-effort interrupt"
 platforms = ["macos", "linux"]
