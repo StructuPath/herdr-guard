@@ -13,7 +13,7 @@ with open(sys.argv[1], "rb") as manifest:
     json.dump(tomllib.load(manifest), sys.stdout)
 `;
 
-function parseManifest(manifestPath) {
+export function parseManifest(manifestPath) {
 	const result = spawnSync("python3", ["-c", TOML_TO_JSON, manifestPath], {
 		encoding: "utf8",
 	});

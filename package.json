@@ -8,7 +8,10 @@
     "node": ">=20.10"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "build": "node scripts/check-syntax.mjs && node scripts/check-manifest.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "validate": "npm run build && npm test",
+    "doctor": "node scripts/doctor.mjs"
   },
   "repository": {
     "type": "git",

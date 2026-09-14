@@ -6,9 +6,8 @@ input.
 
 Current runtime and manifest release: **0.2.0**.
 
-**Docs:** the [StructuPath Herdr Plugins wiki](https://github.com/StructuPath/herdr-browser/wiki)
-is the practical guide to this plugin and its three siblings (Browser, Swarm,
-Conductor).
+**Docs:** [Herdr Suite Guard guide](https://herdr.structupath.ai/docs/guard/),
+[Guard specification](docs/SPEC.md), and [readiness and upgrade guide](docs/readiness.md).
 
 ![herdr-guard policy dry-run demo](assets/herdr-guard-demo.gif)
 
@@ -123,8 +122,8 @@ tampering (`herdr plugin disable`, killing Herdr, deleting rules or audit
 files), and evasion indicators such as `stty -echo`, detached tmux/screen,
 `disown`/`setsid`, history clearing, and base64/hex-to-shell decoding. Every
 rule ships with hit and near-miss tests (`tests/rules-default.test.mjs`);
-`git push --force-with-lease`, `id_rsa.pub` reads, and similar benign
-neighbors are explicitly kept silent. Review the defaults before enabling
+`git push --force-with-lease` is audit-tier, while `id_rsa.pub` reads stay
+silent. Review the defaults before enabling
 interrupt rules in production.
 
 ## Security and trust
@@ -145,12 +144,23 @@ fresh interrupt, and interrupt matches are intentionally never deduplicated.
 ## Development
 
 Requirements: Herdr 0.7.5+, Node.js 20.10+ (JSON import attributes), and the platform lock utility (`lockf` on macOS or `flock` on Linux).
+Source validation also requires Python 3.11+ (`tomllib`) and Bash. Herdr's
+manifest build currently runs the test suite, including manifest validation,
+so Python is required when installing from source as well.
 
 ```sh
-npm test
+npm run doctor
+npm run validate
 herdr plugin link .
 herdr plugin list
 ```
+
+`npm run doctor` checks prerequisites without opening panes or changing policy.
+If PATH selects an older Herdr, select the intended binary explicitly:
+`HERDR_BIN_PATH=/absolute/path/to/herdr npm run doctor`. Use that same binary
+to start Herdr and link the plugin. `npm run build` checks JavaScript and shell
+syntax plus manifest entrypoints and release consistency; plain ESM needs no
+compilation. `npm run validate` runs that build and the full test suite.
 
 Tests use a fake NDJSON socket and temporary config/audit directories; they do
 not open panes or invoke live actions. The implementation uses plain ESM Node
